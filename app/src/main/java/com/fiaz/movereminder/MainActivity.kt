@@ -32,6 +32,7 @@ class MainActivity : Activity() {
     private lateinit var eSteps: EditText
     private lateinit var eStart: EditText
     private lateinit var eEnd: EditText
+    private lateinit var eRepeat: EditText
 
     private val ui = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
@@ -114,6 +115,10 @@ class MainActivity : Activity() {
         eSteps = field("Steps that count as movement", Prefs.moveSteps(this).toString(), root)
         eStart = field("Active from (hour 0-23)", Prefs.windowStart(this).toString(), root)
         eEnd = field("Active until (hour 0-23)", Prefs.windowEnd(this).toString(), root)
+        eRepeat = field(
+            "Repeat reminder every (minutes, 0 = off)",
+            Prefs.repeatMin(this).toString(), root
+        )
         root.addView(button("Save settings") {
             saveSettings()
             toast("Saved")
@@ -192,7 +197,15 @@ class MainActivity : Activity() {
         val st = eSteps.text.toString().toIntOrNull() ?: 25
         val ws = eStart.text.toString().toIntOrNull() ?: 7
         val we = eEnd.text.toString().toIntOrNull() ?: 17
-        Prefs.saveSettings(this, th.coerceIn(5, 240), st.coerceIn(5, 500), ws.coerceIn(0, 23), we.coerceIn(0, 23))
+        val rp = eRepeat.text.toString().toIntOrNull() ?: 10
+        Prefs.saveSettings(
+            this,
+            th.coerceIn(5, 240),
+            st.coerceIn(5, 500),
+            ws.coerceIn(0, 23),
+            we.coerceIn(0, 23),
+            rp.coerceIn(0, 120)
+        )
     }
 
     private fun refresh() {
@@ -208,6 +221,8 @@ class MainActivity : Activity() {
         }
         sb.append("Sitting   : ${Engine.sittingMinutes(this)} min\n")
         sb.append("Threshold : ${Prefs.thresholdMin(this)} min\n")
+        val repeat = Prefs.repeatMin(this)
+        sb.append("Repeat    : ${if (repeat > 0) "every $repeat min" else "off"}\n")
         status.text = sb.toString()
 
         val bouts = BoutLog.readBouts(this).takeLast(15).reversed()
