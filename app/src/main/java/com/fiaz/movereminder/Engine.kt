@@ -8,7 +8,8 @@ import java.util.Calendar
  *
  *   delta = currentSteps - anchorSteps
  *   delta >= moveSteps            -> he moved, close the bout, re-anchor
- *   else if sitting >= threshold  -> nudge once
+ *   else if sitting >= threshold  -> nudge, then repeat every repeatMin
+ *                                    minutes until he moves or dismisses it
  */
 object Engine {
 
@@ -43,6 +44,7 @@ object Engine {
                 .putLong(Prefs.KEY_ANCHOR_TIME, now)
                 .putLong(Prefs.KEY_LAST_STEPS, steps)
                 .putBoolean(Prefs.KEY_NUDGED, false)
+                .putInt(Prefs.KEY_NUDGE_COUNT, 0)
                 .apply()
             BoutLog.debug(ctx, "anchor set (first run or reboot), steps=$steps")
             return
@@ -62,6 +64,7 @@ object Engine {
                 .putLong(Prefs.KEY_ANCHOR_STEPS, steps)
                 .putLong(Prefs.KEY_ANCHOR_TIME, now)
                 .putBoolean(Prefs.KEY_NUDGED, false)
+                .putInt(Prefs.KEY_NUDGE_COUNT, 0)
                 .apply()
             BoutLog.debug(ctx, "meeting expired -> OFFICE, re-anchored")
         }
@@ -76,19 +79,31 @@ object Engine {
                 .putLong(Prefs.KEY_ANCHOR_TIME, now)
                 .putLong(Prefs.KEY_LAST_STEPS, steps)
                 .putBoolean(Prefs.KEY_NUDGED, false)
+                .putInt(Prefs.KEY_NUDGE_COUNT, 0)
                 .apply()
             Notifier.cancelNudge(ctx)
             BoutLog.debug(ctx, "movement: delta=$delta steps -> bout closed")
         } else {
             val sittingMin = (now - anchorTime) / 60000L
+            val repeatMin = Prefs.repeatMin(ctx)
+            val lastNudgeTime = p.getLong(Prefs.KEY_LAST_NUDGE_TIME, 0L)
+            val sinceLastNudgeMin = (now - lastNudgeTime) / 60000L
+
+            val dueForFirstNudge = !nudged && sittingMin >= Prefs.thresholdMin(ctx)
+            val dueForRepeatNudge = nudged && repeatMin > 0 && sinceLastNudgeMin >= repeatMin
+
             if (mode == Prefs.MODE_OFFICE &&
-                !nudged &&
-                sittingMin >= Prefs.thresholdMin(ctx) &&
+                (dueForFirstNudge || dueForRepeatNudge) &&
                 inActiveWindow(ctx)
             ) {
-                Notifier.nudge(ctx, sittingMin.toInt())
-                p.edit().putBoolean(Prefs.KEY_NUDGED, true).apply()
-                BoutLog.debug(ctx, "nudge fired after ${sittingMin} min")
+                val count = p.getInt(Prefs.KEY_NUDGE_COUNT, 0) + 1
+                Notifier.nudge(ctx, sittingMin.toInt(), count)
+                p.edit()
+                    .putBoolean(Prefs.KEY_NUDGED, true)
+                    .putLong(Prefs.KEY_LAST_NUDGE_TIME, now)
+                    .putInt(Prefs.KEY_NUDGE_COUNT, count)
+                    .apply()
+                BoutLog.debug(ctx, "nudge #$count fired after ${sittingMin} min")
             }
             p.edit().putLong(Prefs.KEY_LAST_STEPS, steps).apply()
         }
@@ -107,6 +122,7 @@ object Engine {
             .putLong(Prefs.KEY_ANCHOR_TIME, now)
             .putLong(Prefs.KEY_ANCHOR_STEPS, p.getLong(Prefs.KEY_LAST_STEPS, 0L))
             .putBoolean(Prefs.KEY_NUDGED, false)
+            .putInt(Prefs.KEY_NUDGE_COUNT, 0)
             .apply()
         Notifier.cancelNudge(ctx)
         BoutLog.debug(ctx, "manual: marked as stood up")
@@ -131,6 +147,7 @@ object Engine {
             .putLong(Prefs.KEY_MEETING_UNTIL, 0L)
             .putLong(Prefs.KEY_ANCHOR_TIME, now)
             .putBoolean(Prefs.KEY_NUDGED, false)
+            .putInt(Prefs.KEY_NUDGE_COUNT, 0)
             .apply()
         BoutLog.debug(ctx, "meeting ended manually")
         SedentaryService.refreshStatus(ctx)

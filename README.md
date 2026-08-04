@@ -12,8 +12,11 @@ mode that auto-expires. No server, no account, no internet permission.
   - `delta >= 25` -> you moved. The sitting bout is closed and logged, and the
     anchor resets.
   - otherwise, if you have been sitting past the threshold (default 25 min),
-    inside the active window (default 07:00-17:00), in OFFICE mode -> one
-    notification. Only one per bout, no escalation.
+    inside the active window (default 07:00-17:00), in OFFICE mode -> a
+    notification fires. If ignored, it repeats every `repeat_min` minutes
+    (default 10, configurable in Settings, 0 disables repeats and restores
+    the old one-shot behaviour) until you move, tap **I stood up**, or start
+    meeting mode. Each repeat shows a rising reminder count.
 - Meeting mode suppresses the notification but keeps recording. On expiry it
   reverts to OFFICE and re-anchors to *now*, so you don't get an instant nudge
   for the meeting you just sat through.

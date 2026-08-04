@@ -48,7 +48,7 @@ object Notifier {
             .build()
     }
 
-    fun nudge(ctx: Context, sittingMin: Int) {
+    fun nudge(ctx: Context, sittingMin: Int, count: Int = 1) {
         val stood = PendingIntent.getBroadcast(
             ctx, 10,
             Intent(ctx, ActionReceiver::class.java).setAction(ActionReceiver.ACTION_STOOD),
@@ -59,8 +59,9 @@ object Notifier {
             Intent(ctx, ActionReceiver::class.java).setAction(ActionReceiver.ACTION_MEETING_60),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+        val title = if (count > 1) "Still sitting - reminder #$count" else "Time to stand up"
         val n = Notification.Builder(ctx, CH_NUDGE)
-            .setContentTitle("Time to stand up")
+            .setContentTitle(title)
             .setContentText("You have been sitting for $sittingMin minutes")
             .setSmallIcon(android.R.drawable.ic_menu_directions)
             .setAutoCancel(true)
