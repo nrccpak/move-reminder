@@ -2,6 +2,9 @@ package com.fiaz.movereminder
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
+import android.app.Dialog
+import android.app.TimePickerDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -12,6 +15,7 @@ import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.Typeface
+import android.graphics.drawable.ColorDrawable
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.RippleDrawable
 import android.net.Uri
@@ -24,17 +28,21 @@ import android.text.InputType
 import android.text.Spannable
 import android.text.SpannableString
 import android.text.TextUtils
+import android.text.format.DateFormat
 import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.Window
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Locale
 
 // ------------------------------------------------------------------ palette
@@ -45,9 +53,11 @@ private val LINE = Color.parseColor("#E1E8E5")
 private val INK = Color.parseColor("#0E1B18")
 private val MUTED = Color.parseColor("#5F716C")
 private val ACCENT = Color.parseColor("#17886B")
+private val ACCENT_SOFT = Color.parseColor("#A9D5C6")
 private val AMBER = Color.parseColor("#E39A1E")
 private val RED = Color.parseColor("#B8452F")
 private val BLUE = Color.parseColor("#2F6FDB")
+private val PURPLE = Color.parseColor("#6B4FBB")
 private val TRACK = Color.parseColor("#E6EEEA")
 private val FIELD = Color.parseColor("#F7FAF8")
 private val FIELD_LINE = Color.parseColor("#D5E0DB")
@@ -59,6 +69,8 @@ private val AMBER_LINE = Color.parseColor("#EBD39C")
 private val AMBER_INK = Color.parseColor("#4A3000")
 private val BLUE_BG = Color.parseColor("#E8F0FD")
 private val BLUE_INK = Color.parseColor("#1B3F85")
+private val PURPLE_BG = Color.parseColor("#EFEAFB")
+private val PURPLE_INK = Color.parseColor("#3E2A80")
 private val LOG_BG = Color.parseColor("#14211E")
 private val LOG_FG = Color.parseColor("#CFE3DC")
 private val LOG_TS = Color.parseColor("#7FA395")
@@ -193,6 +205,64 @@ private class FlowLayout(ctx: Context, private val hGap: Int, private val vGap: 
     }
 }
 
+/** Seven bars, oldest day first; today is the last bar and is highlighted. */
+private class WeekChart(ctx: Context) : View(ctx) {
+    private var values: List<Long> = emptyList()
+    private var labels: List<String> = emptyList()
+    private val d = ctx.resources.displayMetrics.density
+    private val sp = d * ctx.resources.configuration.fontScale
+    private val bar = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val txt = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    init {
+        txt.textAlign = Paint.Align.CENTER
+    }
+
+    fun set(v: List<Long>, l: List<String>) {
+        if (v == values && l == labels) return
+        values = v
+        labels = l
+        contentDescription = l.indices.joinToString(", ") { "${l[it]} ${short(v[it])}" }
+        invalidate()
+    }
+
+    private fun short(secs: Long): String {
+        val m = secs / 60
+        return if (m < 60) "${m}m" else String.format(Locale.US, "%.1fh", m / 60.0)
+    }
+
+    override fun onDraw(c: Canvas) {
+        if (values.isEmpty()) return
+        val n = values.size
+        val w = width.toFloat()
+        val h = height.toFloat()
+        val labelH = 22 * d
+        val valueH = 20 * d
+        val bottom = h - labelH
+        val usable = bottom - valueH
+        val maxV = maxOf(values.maxOrNull() ?: 0L, 3600L).toFloat()
+        val slot = w / n
+        val bw = minOf(slot * 0.52f, 30 * d)
+        for (i in 0 until n) {
+            val cx = slot * i + slot / 2f
+            val today = i == n - 1
+            val bh = maxOf(usable * (values[i] / maxV), 3 * d)
+            bar.color = if (today) ACCENT else ACCENT_SOFT
+            c.drawRoundRect(RectF(cx - bw / 2f, bottom - bh, cx + bw / 2f, bottom), 6 * d, 6 * d, bar)
+            if (values[i] > 0) {
+                txt.color = INK
+                txt.textSize = 11 * sp
+                txt.typeface = Typeface.DEFAULT_BOLD
+                c.drawText(short(values[i]), cx, bottom - bh - 6 * d, txt)
+            }
+            txt.color = if (today) ACCENT else MUTED
+            txt.textSize = 12 * sp
+            txt.typeface = if (today) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+            c.drawText(labels[i], cx, h - 5 * d, txt)
+        }
+    }
+}
+
 // ----------------------------------------------------------------- activity
 
 class MainActivity : Activity() {
@@ -206,28 +276,36 @@ class MainActivity : Activity() {
     private lateinit var tvSub: TextView
     private lateinit var chipText: TextView
     private lateinit var chipDot: View
+    private lateinit var setupWarn: TextView
     private lateinit var ring: RingView
     private lateinit var ringNum: TextView
     private lateinit var ringLabel: TextView
-    private lateinit var vMode: TextView
-    private lateinit var vThreshold: TextView
-    private lateinit var vRepeat: TextView
-    private lateinit var banner: TextView
-    private lateinit var startStop: TextView
     private lateinit var ringCaption: TextView
-    private lateinit var endMeetingBtn: TextView
-    private lateinit var setupWarn: TextView
-    private lateinit var setupBox: LinearLayout
-    private var setupSig = ""
+    private lateinit var sumSitting: TextView
+    private lateinit var sumBreaks: TextView
+    private lateinit var sumLongest: TextView
+    private lateinit var modeCard: LinearLayout
+    private lateinit var modeText: TextView
+    private lateinit var startStop: TextView
+    private val segs = ArrayList<TextView>()
+    private lateinit var offBtn: TextView
 
     // settings
     private lateinit var eThreshold: EditText
     private lateinit var eSteps: EditText
-    private lateinit var eStart: EditText
-    private lateinit var eEnd: EditText
     private lateinit var eRepeat: EditText
+    private val dayChips = ArrayList<TextView>()
+    private lateinit var tvStart: TextView
+    private lateinit var tvEnd: TextView
+    private lateinit var lunchSwitch: Switch
+    private lateinit var lunchTimes: LinearLayout
+    private lateinit var tvLunchStart: TextView
+    private lateinit var tvLunchEnd: TextView
+    private lateinit var setupBox: LinearLayout
+    private var setupSig = ""
 
     // history
+    private lateinit var weekChart: WeekChart
     private lateinit var boutList: LinearLayout
     private lateinit var logBox: LinearLayout
     private var historySig = 0
@@ -272,6 +350,11 @@ class MainActivity : Activity() {
         ui.post(ticker)
     }
 
+    override fun onPause() {
+        super.onPause()
+        ui.removeCallbacks(ticker)
+    }
+
     /** If tracking should be on but Android stopped it (update, kill), start it again. */
     private fun selfHeal() {
         if (!Prefs.isRunning(this)) return
@@ -285,11 +368,6 @@ class MainActivity : Activity() {
             SedentaryService.start(this)
         }
         refresh()
-    }
-
-    override fun onPause() {
-        super.onPause()
-        ui.removeCallbacks(ticker)
     }
 
     // ------------------------------------------------------------- helpers
@@ -355,6 +433,7 @@ class MainActivity : Activity() {
         t.background = ripple(fill, radiusDp, stroke, strokeDp)
         t.isClickable = true
         t.isFocusable = true
+        t.setSingleLine(true)
         t.setOnClickListener { onClick() }
         t.layoutParams = lp(h = dp(heightDp))
         return t
@@ -363,7 +442,7 @@ class MainActivity : Activity() {
     private fun column(): LinearLayout {
         val c = LinearLayout(this)
         c.orientation = LinearLayout.VERTICAL
-        c.setPadding(dp(20), dp(24), dp(20), dp(24))
+        c.setPadding(dp(20), dp(24), dp(20), dp(28))
         return c
     }
 
@@ -386,6 +465,30 @@ class MainActivity : Activity() {
         return col
     }
 
+    private fun divider(): View {
+        val d = View(this)
+        d.setBackgroundColor(LINE)
+        return d
+    }
+
+    private fun tag(s: String, bg: Int, fg: Int): TextView {
+        val t = text(s, 12f, fg, BOLD)
+        t.background = shape(bg, 999)
+        t.setPadding(dp(10), dp(4), dp(10), dp(4))
+        return t
+    }
+
+    private fun fmtDur(secs: Long): String {
+        val m = secs / 60
+        return when {
+            m < 1 -> "0 min"
+            m < 60 -> "$m min"
+            else -> "${m / 60} h ${m % 60} m"
+        }
+    }
+
+    private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()
+
     // ------------------------------------------------------------------ UI
 
     private fun buildUi(): View {
@@ -398,9 +501,7 @@ class MainActivity : Activity() {
         screens.forEach { frame.addView(it, FrameLayout.LayoutParams(MATCH, MATCH)) }
         root.addView(frame, lp(h = 0, weight = 1f))
 
-        val line = View(this)
-        line.setBackgroundColor(LINE)
-        root.addView(line, lp(h = dp(1)))
+        root.addView(divider(), lp(h = dp(1)))
 
         val nav = LinearLayout(this)
         nav.orientation = LinearLayout.HORIZONTAL
@@ -474,7 +575,7 @@ class MainActivity : Activity() {
     private fun buildHome(): View {
         val col = column()
 
-        // header: title + status chip on one row, subtitle full width below
+        // header: title + status chip on one row, schedule below
         val head = LinearLayout(this)
         head.orientation = LinearLayout.HORIZONTAL
         head.gravity = Gravity.CENTER_VERTICAL
@@ -501,11 +602,19 @@ class MainActivity : Activity() {
         tvSub.ellipsize = TextUtils.TruncateAt.END
         col.addView(tvSub, lp(top = 4))
 
-        // hero card: big centred ring, caption, then three stats in a row
+        // setup warning (only when something needed for on-time reminders is missing)
+        setupWarn = text("Setup incomplete · reminders may be late or missing. Tap to fix.", 14f, AMBER_INK, MED)
+        setupWarn.background = ripple(AMBER_BG, 16, AMBER_LINE, 1)
+        setupWarn.setPadding(dp(16), dp(12), dp(16), dp(12))
+        setupWarn.isClickable = true
+        setupWarn.setOnClickListener { showTab(1) }
+        setupWarn.visibility = View.GONE
+        col.addView(setupWarn, lp(top = 12))
+
+        // hero card: big centred ring and one caption line
         val hero = card()
         hero.gravity = Gravity.CENTER_HORIZONTAL
-        hero.setPadding(dp(20), dp(26), dp(20), dp(20))
-
+        hero.setPadding(dp(20), dp(26), dp(20), dp(22))
         val ringBox = FrameLayout(this)
         ring = RingView(this)
         ringBox.addView(ring, FrameLayout.LayoutParams(MATCH, MATCH))
@@ -523,41 +632,46 @@ class MainActivity : Activity() {
         center.addView(ringLabel, lp(w = WRAP, top = 4))
         ringBox.addView(center, FrameLayout.LayoutParams(MATCH, MATCH))
         hero.addView(ringBox, lp(w = dp(196), h = dp(196)))
-
         ringCaption = text("", 14f, MUTED, MED)
         ringCaption.gravity = Gravity.CENTER
         hero.addView(ringCaption, lp(top = 14))
+        col.addView(hero, lp(top = 16))
 
-        val divider = View(this)
-        divider.setBackgroundColor(LINE)
-        hero.addView(divider, lp(h = dp(1), top = 20))
+        // today's summary
+        val sum = card(22)
+        sum.orientation = LinearLayout.HORIZONTAL
+        sum.setPadding(dp(12), dp(16), dp(12), dp(16))
+        sumSitting = text("0 min", 17f, INK, BOLD)
+        sumBreaks = text("0", 17f, INK, BOLD)
+        sumLongest = text("0 min", 17f, INK, BOLD)
+        sum.addView(stat("Sitting today", sumSitting), lp(w = 0, weight = 1f))
+        sum.addView(stat("Breaks", sumBreaks), lp(w = 0, weight = 1f))
+        sum.addView(stat("Longest", sumLongest), lp(w = 0, weight = 1f))
+        col.addView(sum, lp(top = 12))
 
-        vMode = text("", 17f, INK, BOLD)
-        vThreshold = text("", 17f, INK, BOLD)
-        vRepeat = text("", 17f, INK, BOLD)
-        val stats = LinearLayout(this)
-        stats.orientation = LinearLayout.HORIZONTAL
-        stats.addView(stat("Mode", vMode), lp(w = 0, weight = 1f))
-        stats.addView(stat("Remind at", vThreshold), lp(w = 0, weight = 1f))
-        stats.addView(stat("Repeat", vRepeat), lp(w = 0, weight = 1f))
-        hero.addView(stats, lp(top = 16))
-        col.addView(hero, lp(top = 18))
-
-        // meeting banner (only visible while a meeting is running)
-        banner = text("", 14f, BLUE_INK, MED)
-        banner.background = shape(BLUE_BG, 16)
-        banner.setPadding(dp(16), dp(12), dp(16), dp(12))
-        banner.visibility = View.GONE
-        col.addView(banner, lp(top = 12))
-
-        // setup warning (only when something needed for on-time reminders is missing)
-        setupWarn = text("Setup incomplete \u00B7 reminders may be late or missing. Tap to fix.", 14f, AMBER_INK, MED)
-        setupWarn.background = ripple(AMBER_BG, 16, AMBER_LINE, 1)
-        setupWarn.setPadding(dp(16), dp(12), dp(16), dp(12))
-        setupWarn.isClickable = true
-        setupWarn.setOnClickListener { showTab(1) }
-        setupWarn.visibility = View.GONE
-        col.addView(setupWarn, lp(top = 12))
+        // running Meeting / Break: countdown with +15 and End now
+        modeCard = LinearLayout(this)
+        modeCard.orientation = LinearLayout.VERTICAL
+        modeCard.setPadding(dp(18), dp(16), dp(18), dp(16))
+        modeText = text("", 16f, BLUE_INK, BOLD)
+        modeCard.addView(modeText, lp())
+        val modeRow = LinearLayout(this)
+        modeRow.orientation = LinearLayout.HORIZONTAL
+        val modePlus = button("+15 min", CARD, INK, 44, 14) {
+            Engine.extendMode(this, 15)
+            refresh()
+        }
+        val modeEnd = button("End now", CARD, INK, 44, 14) {
+            Engine.endMode(this)
+            refresh()
+        }
+        modePlus.textSize = 15f
+        modeEnd.textSize = 15f
+        modeRow.addView(modePlus, lp(w = 0, h = dp(44), weight = 1f, right = 5))
+        modeRow.addView(modeEnd, lp(w = 0, h = dp(44), weight = 1f, left = 5))
+        modeCard.addView(modeRow, lp(top = 12))
+        modeCard.visibility = View.GONE
+        col.addView(modeCard, lp(top = 12))
 
         // main actions
         startStop = button("Start tracking", ACCENT, Color.WHITE, 56, 18) {
@@ -571,45 +685,169 @@ class MainActivity : Activity() {
             refresh()
         }
         col.addView(startStop, lp(h = dp(56), top = 16))
-
         col.addView(
             button("I stood up", CARD, INK, 52, 18, OUTLINE, 2) {
-                Engine.manualStood(this)
-                toast("Marked. Timer reset.")
+                if (Prefs.mode(this) == Prefs.MODE_BREAK) {
+                    toast("On a break - nothing to reset")
+                } else {
+                    Engine.manualStood(this)
+                    toast("Marked. Timer reset.")
+                }
                 refresh()
             },
             lp(h = dp(52), top = 10)
         )
 
-        // meeting mode
-        col.addView(label("Meeting mode"), lp(top = 28))
-        col.addView(text("Pause reminders while you sit in a meeting", 13f, MUTED), lp(top = 4, bottom = 12))
-        val row = LinearLayout(this)
-        row.orientation = LinearLayout.HORIZONTAL
-        val mins = listOf(30, 60, 90, 120)
-        mins.forEachIndexed { idx, m ->
-            val b = button("${m}m", CARD, INK, 48, 14, LINE, 1) {
-                Engine.startMeeting(this, m)
-                toast("Meeting mode for $m min")
-                refresh()
-            }
-            b.textSize = 15f
-            b.setSingleLine(true)
-            row.addView(
-                b,
-                lp(w = 0, h = dp(48), weight = 1f,
-                    left = if (idx == 0) 0 else 4, right = if (idx == mins.size - 1) 0 else 4)
-            )
+        // mode switch
+        col.addView(label("Mode"), lp(top = 26, bottom = 10))
+        val seg = LinearLayout(this)
+        seg.orientation = LinearLayout.HORIZONTAL
+        seg.background = shape(SOFT, 16)
+        seg.setPadding(dp(4), dp(4), dp(4), dp(4))
+        listOf("Office", "Meeting", "Break").forEachIndexed { i, name ->
+            val t = text(name, 15f, SOFT_TEXT, BOLD)
+            t.gravity = Gravity.CENTER
+            t.isClickable = true
+            t.isFocusable = true
+            t.setSingleLine(true)
+            t.setOnClickListener { onSegment(i) }
+            seg.addView(t, lp(w = 0, h = dp(44), weight = 1f))
+            segs.add(t)
         }
-        col.addView(row, lp())
-        endMeetingBtn = button("End meeting now", BLUE_BG, BLUE_INK, 48, 14) {
-            Engine.endMeeting(this)
+        col.addView(seg, lp())
+        col.addView(
+            text("Meeting: no reminders, sitting still counted. Break: everything paused.", 13f, MUTED),
+            lp(top = 8)
+        )
+
+        offBtn = button("", Color.TRANSPARENT, MUTED, 44, 14, OUTLINE, 1) {
+            val off = Prefs.offUntil(this) > System.currentTimeMillis()
+            Engine.setOffToday(this, !off)
+            toast(if (off) "Back on for today" else "Off for today - quiet until midnight")
             refresh()
         }
-        endMeetingBtn.visibility = View.GONE
-        col.addView(endMeetingBtn, lp(h = dp(48), top = 10))
+        offBtn.textSize = 14f
+        col.addView(offBtn, lp(h = dp(44), top = 16))
 
         return scroller(col)
+    }
+
+    private fun onSegment(i: Int) {
+        if (!Prefs.isRunning(this)) {
+            toast("Start tracking first")
+            return
+        }
+        when (i) {
+            0 -> if (Prefs.mode(this) != Prefs.MODE_OFFICE) Engine.endMode(this)
+            1 -> showDurationPanel(Prefs.MODE_MEETING)
+            2 -> showDurationPanel(Prefs.MODE_BREAK)
+        }
+        refresh()
+    }
+
+    // ------------------------------------------------------ duration panel
+
+    private fun showDurationPanel(mode: String) {
+        val meeting = mode == Prefs.MODE_MEETING
+        val colorFill = if (meeting) BLUE else PURPLE
+        val quick = if (meeting) listOf(30, 60, 90, 120) else listOf(10, 15, 30, 45)
+        val lastKey = if (meeting) Prefs.KEY_LAST_MEETING_MIN else Prefs.KEY_LAST_BREAK_MIN
+        val last = Prefs.get(this).getInt(lastKey, if (meeting) 60 else 15)
+
+        val dlg = Dialog(this)
+        dlg.requestWindowFeature(Window.FEATURE_NO_TITLE)
+
+        val outer = FrameLayout(this)
+        outer.setPadding(dp(12), dp(12), dp(12), dp(12))
+        val box = LinearLayout(this)
+        box.orientation = LinearLayout.VERTICAL
+        box.background = shape(CARD, 26)
+        box.setPadding(dp(22), dp(22), dp(22), dp(18))
+        outer.addView(box, FrameLayout.LayoutParams(MATCH, WRAP))
+
+        box.addView(text(if (meeting) "Meeting" else "Break", 20f, INK, BOLD), lp())
+        box.addView(
+            text(
+                if (meeting) "No reminders. Sitting time is still counted."
+                else "Everything pauses. The sitting clock restarts after.",
+                14f, MUTED
+            ),
+            lp(top = 4)
+        )
+
+        fun go(until: Long, minutes: Int?) {
+            if (minutes != null) Prefs.get(this).edit().putInt(lastKey, minutes).apply()
+            Engine.startMode(this, mode, until)
+            toast("${if (meeting) "Meeting" else "Break"} until ${Rules.hhmm(until)}")
+            dlg.dismiss()
+            refresh()
+        }
+
+        val row = LinearLayout(this)
+        row.orientation = LinearLayout.HORIZONTAL
+        quick.forEachIndexed { idx, m ->
+            val sel = m == last
+            val b = button(
+                "${m}m", if (sel) colorFill else CARD, if (sel) Color.WHITE else INK,
+                50, 14, if (sel) colorFill else OUTLINE, if (sel) 0 else 1
+            ) { go(System.currentTimeMillis() + m * 60_000L, m) }
+            b.textSize = 15f
+            row.addView(
+                b,
+                lp(w = 0, h = dp(50), weight = 1f,
+                    left = if (idx == 0) 0 else 4, right = if (idx == quick.size - 1) 0 else 4)
+            )
+        }
+        box.addView(row, lp(top = 18))
+
+        val row2 = LinearLayout(this)
+        row2.orientation = LinearLayout.HORIZONTAL
+        val until = button("Until…", CARD, INK, 48, 14, OUTLINE, 1) {
+            val c = Calendar.getInstance()
+            c.add(Calendar.MINUTE, last)
+            TimePickerDialog(this, { _, h, m ->
+                val now = System.currentTimeMillis()
+                var t = Rules.dayAt(now, java.util.TimeZone.getDefault(), 0, h * 60 + m)
+                if (t <= now) t += 24 * 60 * 60_000L
+                go(t, null)
+            }, c.get(Calendar.HOUR_OF_DAY), c.get(Calendar.MINUTE), DateFormat.is24HourFormat(this)).show()
+        }
+        val custom = button("Custom", CARD, INK, 48, 14, OUTLINE, 1) {
+            val e = EditText(this)
+            e.inputType = InputType.TYPE_CLASS_NUMBER
+            e.hint = "Minutes"
+            e.setText(last.toString())
+            e.setSelection(e.text.length)
+            val wrap = FrameLayout(this)
+            wrap.setPadding(dp(24), dp(8), dp(24), 0)
+            wrap.addView(e)
+            AlertDialog.Builder(this)
+                .setTitle(if (meeting) "Meeting length (minutes)" else "Break length (minutes)")
+                .setView(wrap)
+                .setPositiveButton("Start") { _, _ ->
+                    val m = (e.text.toString().toIntOrNull() ?: last).coerceIn(1, 600)
+                    go(System.currentTimeMillis() + m * 60_000L, m)
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+        until.textSize = 15f
+        custom.textSize = 15f
+        row2.addView(until, lp(w = 0, h = dp(48), weight = 1f, right = 4))
+        row2.addView(custom, lp(w = 0, h = dp(48), weight = 1f, left = 4))
+        box.addView(row2, lp(top = 10))
+
+        val cancel = button("Cancel", Color.TRANSPARENT, MUTED, 44, 14) { dlg.dismiss() }
+        cancel.textSize = 15f
+        box.addView(cancel, lp(h = dp(44), top = 8))
+
+        dlg.setContentView(outer)
+        dlg.window?.let {
+            it.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
+            it.setLayout(MATCH, WRAP)
+            it.setGravity(Gravity.BOTTOM)
+        }
+        dlg.show()
     }
 
     // ------------------------------------------------------------ settings
@@ -651,40 +889,130 @@ class MainActivity : Activity() {
         return b
     }
 
+    /** A field that shows a time and opens the clock picker. */
+    private fun timeField(desc: String, onClick: () -> Unit): TextView {
+        val t = text("", 20f, INK, MED)
+        t.gravity = Gravity.CENTER_VERTICAL
+        t.setPadding(dp(16), 0, dp(16), 0)
+        t.background = ripple(FIELD, 16, FIELD_LINE, 1)
+        t.isClickable = true
+        t.isFocusable = true
+        t.contentDescription = desc
+        t.setOnClickListener { onClick() }
+        return t
+    }
+
+    private fun timeBlock(title: String, field: TextView): LinearLayout {
+        val b = LinearLayout(this)
+        b.orientation = LinearLayout.VERTICAL
+        b.addView(text(title, 15f, INK, BOLD), lp(bottom = 8))
+        b.addView(field, lp(h = dp(56)))
+        return b
+    }
+
+    private fun pickTime(current: Int, done: (Int) -> Unit) {
+        TimePickerDialog(this, { _, h, m -> done(h * 60 + m) },
+            current / 60, current % 60, DateFormat.is24HourFormat(this)).show()
+    }
+
+    private fun putInt(key: String, v: Int) {
+        Prefs.get(this).edit().putInt(key, v).commit()
+        scheduleChanged()
+    }
+
+    private fun scheduleChanged() {
+        Engine.reschedule(this)
+        SedentaryService.refreshStatus(this)
+        refresh()
+    }
+
     private fun buildSettings(): View {
         val col = column()
-        col.addView(titleBlock("Settings", "When and how Move Reminder nudges you"), lp())
+        col.addView(titleBlock("Settings", "Reminders, work days and setup"), lp())
 
+        // reminders
         eThreshold = numField(Prefs.thresholdMin(this).toString(), "Sit threshold in minutes")
-        eSteps = numField(Prefs.moveSteps(this).toString(), "Steps that count as movement")
-        eStart = numField(Prefs.windowStart(this).toString(), "Active from hour")
-        eEnd = numField(Prefs.windowEnd(this).toString(), "Active until hour")
+        eSteps = numField(Prefs.moveSteps(this).toString(), "Steps that count as a break")
         eRepeat = numField(Prefs.repeatMin(this).toString(), "Repeat reminder every minutes")
-
-        val fields = card()
-        fields.addView(fieldBlock("Sit threshold", eThreshold, "minutes", "First reminder after this much sitting"), lp())
-        fields.addView(
+        val rem = card()
+        rem.addView(text("Reminders", 18f, INK, BOLD), lp())
+        rem.addView(fieldBlock("Sit threshold", eThreshold, "minutes", "First reminder after this much sitting"), lp(top = 16))
+        rem.addView(
             fieldBlock("Steps that count as a break", eSteps, "steps", "Steps within about 5 minutes. 25 to 40 works well."),
-            lp(top = 20)
+            lp(top = 18)
         )
-
-        val hours = LinearLayout(this)
-        hours.orientation = LinearLayout.HORIZONTAL
-        hours.addView(fieldBlock("Active from", eStart, null, "Hour, 0 to 23"), lp(w = 0, weight = 1f, right = 7))
-        hours.addView(fieldBlock("Active until", eEnd, null, "Hour, 0 to 23"), lp(w = 0, weight = 1f, left = 7))
-        fields.addView(hours, lp(top = 20))
-        fields.addView(text("Reminders only run between these hours. Same hour in both = all day.", 13f, MUTED), lp(top = 8))
-
-        fields.addView(fieldBlock("Repeat reminder every", eRepeat, "minutes", "Repeats until you move. 0 = remind once only."), lp(top = 20))
-        col.addView(fields, lp(top = 16))
-
-        col.addView(
-            button("Save settings", ACCENT, Color.WHITE, 58, 18) {
+        rem.addView(
+            fieldBlock("Repeat reminder every", eRepeat, "minutes", "Repeats until you move. 0 = remind once only."),
+            lp(top = 18)
+        )
+        rem.addView(
+            button("Save", ACCENT, Color.WHITE, 52, 16) {
                 saveSettings()
                 toast("Saved")
             },
-            lp(h = dp(58), top = 16)
+            lp(h = dp(52), top = 18)
         )
+        col.addView(rem, lp(top = 16))
+
+        // work schedule
+        val sch = card()
+        sch.addView(text("Work schedule", 18f, INK, BOLD), lp())
+        sch.addView(text("Reminders only run on these days and times.", 14f, MUTED), lp(top = 4))
+        sch.addView(label("Work days"), lp(top = 18, bottom = 10))
+        val days = LinearLayout(this)
+        days.orientation = LinearLayout.HORIZONTAL
+        Rules.DAY_NAMES.forEachIndexed { i, name ->
+            val chip = text(name, 13f, INK, BOLD)
+            chip.gravity = Gravity.CENTER
+            chip.isClickable = true
+            chip.isFocusable = true
+            chip.setSingleLine(true)
+            chip.setOnClickListener {
+                putInt(Prefs.KEY_WORK_DAYS, Prefs.workDays(this) xor (1 shl i))
+            }
+            days.addView(chip, lp(w = 0, h = dp(44), weight = 1f, left = if (i == 0) 0 else 2, right = if (i == 6) 0 else 2))
+            dayChips.add(chip)
+        }
+        sch.addView(days, lp())
+
+        tvStart = timeField("Work start time") { pickTime(Prefs.startMin(this)) { putInt(Prefs.KEY_START_MIN, it) } }
+        tvEnd = timeField("Work end time") { pickTime(Prefs.endMin(this)) { putInt(Prefs.KEY_END_MIN, it) } }
+        val times = LinearLayout(this)
+        times.orientation = LinearLayout.HORIZONTAL
+        times.addView(timeBlock("Start", tvStart), lp(w = 0, weight = 1f, right = 7))
+        times.addView(timeBlock("End", tvEnd), lp(w = 0, weight = 1f, left = 7))
+        sch.addView(times, lp(top = 18))
+        sch.addView(text("Same start and end time = all day.", 13f, MUTED), lp(top = 6))
+
+        sch.addView(divider(), lp(h = dp(1), top = 18))
+        val lunchRow = LinearLayout(this)
+        lunchRow.orientation = LinearLayout.HORIZONTAL
+        lunchRow.gravity = Gravity.CENTER_VERTICAL
+        val lunchText = LinearLayout(this)
+        lunchText.orientation = LinearLayout.VERTICAL
+        lunchText.addView(text("Lunch break", 15f, INK, BOLD), lp())
+        lunchText.addView(text("Quiet during lunch. The sitting clock restarts after.", 13f, MUTED), lp(top = 2))
+        lunchRow.addView(lunchText, lp(w = 0, weight = 1f, right = 12))
+        lunchSwitch = Switch(this)
+        lunchSwitch.isChecked = Prefs.lunchOn(this)
+        lunchSwitch.contentDescription = "Lunch break"
+        lunchSwitch.setOnCheckedChangeListener { _, on ->
+            if (on != Prefs.lunchOn(this)) {
+                Prefs.get(this).edit().putBoolean(Prefs.KEY_LUNCH_ON, on).commit()
+                scheduleChanged()
+            }
+        }
+        lunchRow.addView(lunchSwitch, lp(w = WRAP))
+        sch.addView(lunchRow, lp(top = 16))
+
+        tvLunchStart = timeField("Lunch start") { pickTime(Prefs.lunchStart(this)) { putInt(Prefs.KEY_LUNCH_START, it) } }
+        tvLunchEnd = timeField("Lunch end") { pickTime(Prefs.lunchEnd(this)) { putInt(Prefs.KEY_LUNCH_END, it) } }
+        lunchTimes = LinearLayout(this)
+        lunchTimes.orientation = LinearLayout.HORIZONTAL
+        lunchTimes.addView(timeBlock("From", tvLunchStart), lp(w = 0, weight = 1f, right = 7))
+        lunchTimes.addView(timeBlock("To", tvLunchEnd), lp(w = 0, weight = 1f, left = 7))
+        sch.addView(lunchTimes, lp(top = 14))
+        col.addView(sch, lp(top = 16))
 
         // setup check (live status, one fix button per missing item)
         val setup = card()
@@ -693,9 +1021,26 @@ class MainActivity : Activity() {
         setupBox = LinearLayout(this)
         setupBox.orientation = LinearLayout.VERTICAL
         setup.addView(setupBox, lp(top = 6))
-        col.addView(setup, lp(top = 24))
+        col.addView(setup, lp(top = 16))
 
         return scroller(col)
+    }
+
+    private fun refreshSettings() {
+        val mask = Prefs.workDays(this)
+        dayChips.forEachIndexed { i, chip ->
+            val on = (mask shr i) and 1 == 1
+            chip.background = if (on) ripple(ACCENT, 12) else ripple(CARD, 12, OUTLINE, 1)
+            chip.setTextColor(if (on) Color.WHITE else MUTED)
+            chip.contentDescription = "${Rules.DAY_NAMES[i]} ${if (on) "work day" else "day off"}"
+        }
+        tvStart.text = Rules.minText(Prefs.startMin(this))
+        tvEnd.text = Rules.minText(Prefs.endMin(this))
+        val lunch = Prefs.lunchOn(this)
+        if (lunchSwitch.isChecked != lunch) lunchSwitch.isChecked = lunch
+        lunchTimes.visibility = if (lunch) View.VISIBLE else View.GONE
+        tvLunchStart.text = Rules.minText(Prefs.lunchStart(this))
+        tvLunchEnd.text = Rules.minText(Prefs.lunchEnd(this))
     }
 
     private fun setupRow(title: String, detail: String, ok: Boolean, badge: String?, fixLabel: String, fix: () -> Unit): View {
@@ -758,11 +1103,7 @@ class MainActivity : Activity() {
             x, null, "Allow"
         ) { fixExact() })
         rows.forEachIndexed { i, v ->
-            if (i > 0) {
-                val d = View(this)
-                d.setBackgroundColor(LINE)
-                setupBox.addView(d, lp(h = dp(1)))
-            }
+            if (i > 0) setupBox.addView(divider(), lp(h = dp(1)))
             setupBox.addView(v, lp())
         }
     }
@@ -772,7 +1113,7 @@ class MainActivity : Activity() {
             startActivity(i)
         } catch (e: Exception) {
             try {
-                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                startActivity(appDetails())
             } catch (x: Exception) {
                 toast("Not available on this device")
             }
@@ -837,11 +1178,20 @@ class MainActivity : Activity() {
         refreshBtn.setPadding(dp(16), 0, dp(16), 0)
         head.addView(refreshBtn, lp(w = WRAP, h = dp(40)))
         col.addView(head, lp())
-        col.addView(text("Last 15 sitting bouts and engine decisions", 14f, MUTED), lp(top = 4))
+        col.addView(text("Sitting time, breaks and engine log", 14f, MUTED), lp(top = 4))
 
+        val chartCard = card(22)
+        chartCard.setPadding(dp(18), dp(18), dp(18), dp(14))
+        chartCard.addView(text("Sitting per day", 16f, INK, BOLD), lp())
+        chartCard.addView(text("Last 7 days · today on the right", 13f, MUTED), lp(top = 2))
+        weekChart = WeekChart(this)
+        chartCard.addView(weekChart, lp(h = dp(160), top = 12))
+        col.addView(chartCard, lp(top = 16))
+
+        col.addView(label("Recent"), lp(top = 24, bottom = 10))
         boutList = LinearLayout(this)
         boutList.orientation = LinearLayout.VERTICAL
-        col.addView(boutList, lp(top = 16))
+        col.addView(boutList, lp())
 
         col.addView(label("Engine log"), lp(top = 24, bottom = 10))
         logBox = LinearLayout(this)
@@ -853,26 +1203,10 @@ class MainActivity : Activity() {
         return scroller(col)
     }
 
-    private fun tag(s: String, bg: Int, fg: Int): TextView {
-        val t = text(s, 12f, fg, BOLD)
-        t.background = shape(bg, 999)
-        t.setPadding(dp(10), dp(4), dp(10), dp(4))
-        return t
-    }
-
-    private fun fmtDur(secs: Long): String {
-        val m = secs / 60
-        return when {
-            m < 1 -> "<1 min"
-            m < 120 -> "$m min"
-            else -> "${m / 60} h ${m % 60} min"
-        }
-    }
-
     private fun fmtDay(ts: String): String {
         return try {
             val d = SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(ts.substring(0, 10))
-            if (d == null) ts else SimpleDateFormat("d MMM yyyy", Locale.US).format(d)
+            if (d == null) ts else SimpleDateFormat("EEE d MMM", Locale.US).format(d)
         } catch (e: Exception) {
             ts
         }
@@ -887,10 +1221,11 @@ class MainActivity : Activity() {
         val mode = p[3]
         val nudged = p[4] == "true"
         val endedBy = p[5]
+        val isBreak = mode == Prefs.MODE_BREAK
 
         val c = LinearLayout(this)
         c.orientation = LinearLayout.VERTICAL
-        c.background = shape(CARD, 20, LINE, 1)
+        c.background = shape(if (isBreak) PURPLE_BG else CARD, 20, if (isBreak) PURPLE_BG else LINE, 1)
         c.setPadding(dp(18), dp(16), dp(18), dp(16))
 
         val top = LinearLayout(this)
@@ -898,44 +1233,52 @@ class MainActivity : Activity() {
         top.gravity = Gravity.CENTER_VERTICAL
         val left = LinearLayout(this)
         left.orientation = LinearLayout.VERTICAL
-        left.addView(text("${hm(start)} to ${hm(end)}", 17f, INK, BOLD))
-        left.addView(text(fmtDay(start), 13f, MUTED))
+        left.addView(text(if (isBreak) "Break" else "${hm(start)} to ${hm(end)}", 17f, if (isBreak) PURPLE_INK else INK, BOLD))
+        left.addView(text(if (isBreak) "${hm(start)} to ${hm(end)} · ${fmtDay(start)}" else fmtDay(start), 13f, MUTED))
         top.addView(left, lp(w = 0, weight = 1f))
-        top.addView(text(fmtDur(secs), 17f, INK, BOLD), lp(w = WRAP))
+        top.addView(text(fmtDur(secs), 17f, if (isBreak) PURPLE_INK else INK, BOLD), lp(w = WRAP))
         c.addView(top, lp())
 
-        // duration bar
-        val frac = (secs.toFloat() / maxSecs.toFloat()).coerceIn(0.05f, 1f)
-        val bar = LinearLayout(this)
-        bar.orientation = LinearLayout.HORIZONTAL
-        bar.background = shape(Color.parseColor("#EDF2EF"), 4)
-        val fill = View(this)
-        fill.background = shape(if (nudged) AMBER else ACCENT, 4)
-        bar.addView(fill, LinearLayout.LayoutParams(0, MATCH, frac))
-        bar.addView(View(this), LinearLayout.LayoutParams(0, MATCH, 1f - frac))
-        c.addView(bar, lp(h = dp(8), top = 12))
+        if (!isBreak) {
+            val frac = (secs.toFloat() / maxSecs.toFloat()).coerceIn(0.05f, 1f)
+            val bar = LinearLayout(this)
+            bar.orientation = LinearLayout.HORIZONTAL
+            bar.background = shape(Color.parseColor("#EDF2EF"), 4)
+            val fill = View(this)
+            fill.background = shape(if (nudged) AMBER else ACCENT, 4)
+            bar.addView(fill, LinearLayout.LayoutParams(0, MATCH, frac))
+            bar.addView(View(this), LinearLayout.LayoutParams(0, MATCH, 1f - frac))
+            c.addView(bar, lp(h = dp(8), top = 12))
 
-        // tags
-        val tags = FlowLayout(this, dp(8), dp(8))
-        if (nudged) tags.addView(tag("Nudged", Color.parseColor("#FFF1D1"), Color.parseColor("#6B4500")))
-        val endText = when (endedBy) {
-            "movement" -> "Ended by movement"
-            "manual" -> "Ended manually"
-            "meeting_end" -> "Meeting ended"
-            "meeting" -> "Meeting started"
-            "hours_end" -> "Active hours ended"
-            "stopped" -> "Tracking stopped"
-            else -> endedBy
+            val tags = FlowLayout(this, dp(8), dp(8))
+            if (nudged) tags.addView(tag("Reminded", Color.parseColor("#FFF1D1"), Color.parseColor("#6B4500")))
+            val endText = when (endedBy) {
+                "movement" -> "Ended by walking"
+                "manual" -> "I stood up"
+                "meeting_end" -> "Meeting ended"
+                "meeting" -> "Meeting started"
+                "break" -> "Break started"
+                "lunch" -> "Lunch break"
+                "hours_end" -> "Work hours ended"
+                "off_today" -> "Off today"
+                "stopped" -> "Tracking stopped"
+                else -> endedBy
+            }
+            val good = endedBy == "movement" || endedBy == "manual"
+            tags.addView(tag(endText, if (good) Color.parseColor("#DDF1E8") else SOFT,
+                if (good) Color.parseColor("#0F5A45") else SOFT_TEXT))
+            tags.addView(tag(if (mode == Prefs.MODE_MEETING) "Meeting" else "Office",
+                if (mode == Prefs.MODE_MEETING) BLUE_BG else SOFT,
+                if (mode == Prefs.MODE_MEETING) BLUE_INK else SOFT_TEXT))
+            c.addView(tags, lp(top = 12))
         }
-        val endBg = if (endedBy == "movement") Color.parseColor("#DDF1E8") else SOFT
-        val endFg = if (endedBy == "movement") Color.parseColor("#0F5A45") else SOFT_TEXT
-        tags.addView(tag(endText, endBg, endFg))
-        tags.addView(tag(if (mode == Prefs.MODE_MEETING) "Meeting" else "Office", SOFT, SOFT_TEXT))
-        c.addView(tags, lp(top = 12))
         return c
     }
 
     private fun rebuildHistory() {
+        val week = Engine.weekSitting(this)
+        weekChart.set(week.map { it.second }, week.map { it.first })
+
         val bouts = BoutLog.readBouts(this).takeLast(15).reversed()
         val log = BoutLog.readDebug(this).takeLast(25).reversed()
         val sig = bouts.hashCode() * 31 + log.hashCode()
@@ -945,12 +1288,13 @@ class MainActivity : Activity() {
         boutList.removeAllViews()
         val parsed = bouts.map { it.split(",") }.filter { it.size >= 6 && it[0].length >= 16 && it[1].length >= 16 }
         if (parsed.isEmpty()) {
-            val empty = text("No sitting bouts recorded yet.", 15f, MUTED)
+            val empty = text("Nothing recorded yet.", 15f, MUTED)
             empty.background = shape(CARD, 20, LINE, 1)
             empty.setPadding(dp(18), dp(18), dp(18), dp(18))
             boutList.addView(empty, lp())
         } else {
-            val maxSecs = parsed.maxOf { it[2].toLongOrNull() ?: 0L }.coerceAtLeast(1L)
+            val maxSecs = parsed.filter { it[3] != Prefs.MODE_BREAK }
+                .maxOfOrNull { it[2].toLongOrNull() ?: 0L }?.coerceAtLeast(1L) ?: 1L
             parsed.forEachIndexed { i, p ->
                 boutList.addView(boutCard(p, maxSecs), lp(top = if (i == 0) 0 else 10))
             }
@@ -978,22 +1322,11 @@ class MainActivity : Activity() {
     private fun saveSettings() {
         val th = eThreshold.text.toString().toIntOrNull() ?: 25
         val st = eSteps.text.toString().toIntOrNull() ?: 25
-        val ws = eStart.text.toString().toIntOrNull() ?: 7
-        val we = eEnd.text.toString().toIntOrNull() ?: 17
         val rp = eRepeat.text.toString().toIntOrNull() ?: 10
-        Prefs.saveSettings(
-            this,
-            th.coerceIn(5, 240),
-            st.coerceIn(5, 500),
-            ws.coerceIn(0, 23),
-            we.coerceIn(0, 23),
-            rp.coerceIn(0, 120)
-        )
+        Prefs.saveSettings(this, th.coerceIn(5, 240), st.coerceIn(5, 500), rp.coerceIn(0, 120))
         // show the values that were actually stored (after limits)
         eThreshold.setText(Prefs.thresholdMin(this).toString())
         eSteps.setText(Prefs.moveSteps(this).toString())
-        eStart.setText(Prefs.windowStart(this).toString())
-        eEnd.setText(Prefs.windowEnd(this).toString())
         eRepeat.setText(Prefs.repeatMin(this).toString())
         Engine.reschedule(this)
         SedentaryService.refreshStatus(this)
@@ -1001,75 +1334,106 @@ class MainActivity : Activity() {
     }
 
     private fun refresh() {
+        val now = System.currentTimeMillis()
         val running = Prefs.isRunning(this)
-        val meeting = Prefs.mode(this) == Prefs.MODE_MEETING
+        val mode = Prefs.mode(this)
+        val meeting = running && mode == Prefs.MODE_MEETING
+        val brk = running && mode == Prefs.MODE_BREAK
+        val paused = meeting || brk
+        val win = Engine.windowNow(this)
         val threshold = Prefs.thresholdMin(this)
-        val repeat = Prefs.repeatMin(this)
-        val left = Engine.meetingMinutesLeft(this)
-        val active = Engine.isActiveNow(this)
-        val sitting = if (running) Engine.sittingMinutes(this) else 0L
+        val sitting = Engine.sittingMinutes(this)
+        val left = Engine.modeMinutesLeft(this)
+        val until = Prefs.modeUntil(this)
+        val snooze = Prefs.snoozeUntil(this)
+        val off = Prefs.offUntil(this) > now
 
         // header
-        val ws = Prefs.windowStart(this)
-        val we = Prefs.windowEnd(this)
-        val window = if (ws == we) "all day" else String.format(Locale.US, "%02d:00\u2013%02d:00", ws, we)
-        tvSub.text = (if (meeting) "Meeting mode" else "Office mode") + " \u00B7 active " + window
+        tvSub.text = Engine.scheduleText(this)
+        val chip: String
         val dot: Int
-        if (!running) {
-            chipText.text = "Stopped"; dot = RED
-        } else if (meeting) {
-            chipText.text = "Meeting"; dot = BLUE
-        } else if (!active) {
-            chipText.text = "Off hours"; dot = MUTED
-        } else {
-            chipText.text = "Tracking"; dot = ACCENT
+        when {
+            !running -> { chip = "Stopped"; dot = RED }
+            meeting -> { chip = "Meeting"; dot = BLUE }
+            brk -> { chip = "Break"; dot = PURPLE }
+            !win.active -> {
+                chip = when (win.reason) {
+                    Rules.REASON_LUNCH -> "Lunch"
+                    Rules.REASON_OFF_TODAY -> "Off today"
+                    else -> "Off hours"
+                }
+                dot = MUTED
+            }
+            else -> { chip = "Tracking"; dot = ACCENT }
         }
+        chipText.text = chip
         chipDot.background = shape(dot, 4)
 
         // ring
-        if (running && meeting) {
+        val over = running && !paused && win.active && sitting >= threshold
+        if (paused) {
             ringNum.text = left.toString()
             ringLabel.text = "min left"
-            ring.ringColor = BLUE
-            ring.progress = 1f
+            ring.ringColor = if (meeting) BLUE else PURPLE
+            val total = (until - Prefs.anchorTime(this)).toFloat()
+            ring.progress = if (total > 0f) ((until - now) / total) else 1f
         } else {
             ringNum.text = sitting.toString()
             ringLabel.text = "min sitting"
-            val over = running && sitting >= threshold
             ring.ringColor = if (over) AMBER else ACCENT
-            ring.progress = if (running && threshold > 0) sitting.toFloat() / threshold.toFloat() else 0f
+            ring.progress = if (running && win.active && threshold > 0) sitting.toFloat() / threshold.toFloat() else 0f
         }
-
         ringCaption.text = when {
             !running -> "Tap Start tracking to begin"
-            meeting -> "Reminders paused"
-            !active -> "Outside active hours \u00B7 resumes ${Engine.resumesAt(this)}"
+            meeting -> "Reminders paused · until ${Rules.hhmm(until)}"
+            brk -> "Everything paused · until ${Rules.hhmm(until)}"
+            !win.active -> Engine.statusLine(this)
+            snooze > now -> "Snoozed until ${Rules.hhmm(snooze)}"
             sitting >= threshold -> "Time to stand up"
             else -> "Reminder at $threshold min"
         }
-        ringCaption.setTextColor(if (running && !meeting && active && sitting >= threshold) Color.parseColor("#8A5A00") else MUTED)
+        ringCaption.setTextColor(if (over) Color.parseColor("#8A5A00") else MUTED)
 
-        vMode.text = if (meeting) "Meeting" else "Office"
-        vThreshold.text = "$threshold min"
-        vRepeat.text = if (repeat > 0) "$repeat min" else "Off"
+        // today
+        val st = Engine.todayStats(this)
+        sumSitting.text = fmtDur(st.sittingSecs)
+        sumBreaks.text = st.breaks.toString()
+        sumLongest.text = fmtDur(st.longestSecs)
 
-        if (meeting) {
-            banner.text = "Meeting mode, $left min left. Reminders are paused."
-            banner.visibility = View.VISIBLE
-            endMeetingBtn.visibility = View.VISIBLE
+        // running Meeting / Break
+        if (paused) {
+            modeCard.visibility = View.VISIBLE
+            modeCard.background = shape(if (meeting) BLUE_BG else PURPLE_BG, 20)
+            modeText.setTextColor(if (meeting) BLUE_INK else PURPLE_INK)
+            modeText.text = "${if (meeting) "Meeting" else "Break"} · $left min left · until ${Rules.hhmm(until)}"
         } else {
-            banner.visibility = View.GONE
-            endMeetingBtn.visibility = View.GONE
+            modeCard.visibility = View.GONE
         }
+
+        // mode switch
+        val sel = when { meeting -> 1; brk -> 2; running -> 0; else -> -1 }
+        val selColor = listOf(ACCENT, BLUE, PURPLE)
+        segs.forEachIndexed { i, t ->
+            if (i == sel) {
+                t.background = shape(CARD, 12, LINE, 1)
+                t.setTextColor(selColor[i])
+            } else {
+                t.background = null
+                t.setTextColor(SOFT_TEXT)
+            }
+        }
+
+        offBtn.text = if (off) "Off today · tap to turn back on" else "Off today (quiet until midnight)"
+        offBtn.setTextColor(if (off) AMBER_INK else MUTED)
+        offBtn.background = if (off) ripple(AMBER_BG, 14, AMBER_LINE, 1) else ripple(Color.TRANSPARENT, 14, OUTLINE, 1)
 
         startStop.text = if (running) "Stop tracking" else "Start tracking"
         startStop.background = ripple(if (running) Color.parseColor("#1F2A27") else ACCENT, 18)
 
+        refreshSettings()
         refreshSetup()
         if (tab == 2) rebuildHistory()
     }
-
-    private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()
 
     private fun askPermissions() {
         val need = ArrayList<String>()
