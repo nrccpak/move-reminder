@@ -23,6 +23,7 @@ import android.provider.Settings
 import android.text.InputType
 import android.text.Spannable
 import android.text.SpannableString
+import android.text.TextUtils
 import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.view.View
@@ -85,7 +86,7 @@ private class RingView(ctx: Context) : View(ctx) {
 
     override fun onDraw(c: Canvas) {
         val w = width.toFloat()
-        val sw = w * 12f / 140f
+        val sw = w * 10f / 140f
         track.strokeWidth = sw
         arc.strokeWidth = sw
         track.color = TRACK
@@ -142,6 +143,56 @@ private class IconView(ctx: Context, private val kind: Int) : View(ctx) {
     }
 }
 
+/** Lays children out left to right and wraps to a new row when out of width. */
+private class FlowLayout(ctx: Context, private val hGap: Int, private val vGap: Int) : ViewGroup(ctx) {
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val mode = MeasureSpec.getMode(widthMeasureSpec)
+        val size = MeasureSpec.getSize(widthMeasureSpec)
+        val maxW = if (mode == MeasureSpec.UNSPECIFIED) Int.MAX_VALUE else size - paddingLeft - paddingRight
+        var x = 0
+        var y = 0
+        var rowH = 0
+        var widest = 0
+        for (i in 0 until childCount) {
+            val c = getChildAt(i)
+            if (c.visibility == View.GONE) continue
+            c.measure(
+                MeasureSpec.makeMeasureSpec(maxW, MeasureSpec.AT_MOST),
+                MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED)
+            )
+            if (x > 0 && x + c.measuredWidth > maxW) {
+                x = 0
+                y += rowH + vGap
+                rowH = 0
+            }
+            x += c.measuredWidth + hGap
+            widest = maxOf(widest, x - hGap)
+            rowH = maxOf(rowH, c.measuredHeight)
+        }
+        val w = if (mode == MeasureSpec.EXACTLY) size else widest + paddingLeft + paddingRight
+        setMeasuredDimension(w, y + rowH + paddingTop + paddingBottom)
+    }
+
+    override fun onLayout(changed: Boolean, l: Int, t: Int, r: Int, b: Int) {
+        val maxW = r - l - paddingLeft - paddingRight
+        var x = 0
+        var y = 0
+        var rowH = 0
+        for (i in 0 until childCount) {
+            val c = getChildAt(i)
+            if (c.visibility == View.GONE) continue
+            if (x > 0 && x + c.measuredWidth > maxW) {
+                x = 0
+                y += rowH + vGap
+                rowH = 0
+            }
+            c.layout(paddingLeft + x, paddingTop + y, paddingLeft + x + c.measuredWidth, paddingTop + y + c.measuredHeight)
+            x += c.measuredWidth + hGap
+            rowH = maxOf(rowH, c.measuredHeight)
+        }
+    }
+}
+
 // ----------------------------------------------------------------- activity
 
 class MainActivity : Activity() {
@@ -163,6 +214,8 @@ class MainActivity : Activity() {
     private lateinit var vRepeat: TextView
     private lateinit var banner: TextView
     private lateinit var startStop: TextView
+    private lateinit var ringCaption: TextView
+    private lateinit var endMeetingBtn: TextView
 
     // settings
     private lateinit var eThreshold: EditText
@@ -304,7 +357,7 @@ class MainActivity : Activity() {
     private fun titleBlock(title: String, sub: String?): LinearLayout {
         val col = LinearLayout(this)
         col.orientation = LinearLayout.VERTICAL
-        col.addView(text(title, 26f, INK, BOLD))
+        col.addView(text(title, 24f, INK, BOLD))
         if (sub != null) {
             val s = text(sub, 14f, MUTED)
             s.setPadding(0, dp(2), 0, 0)
@@ -344,11 +397,13 @@ class MainActivity : Activity() {
             val icon = IconView(this, i)
             val lbl = text(names[i], 12f, MUTED, MED)
             lbl.setPadding(0, dp(4), 0, 0)
+            lbl.gravity = Gravity.CENTER
+            lbl.setSingleLine(true)
             item.addView(icon, LinearLayout.LayoutParams(dp(24), dp(24)))
             item.addView(lbl)
             navIcons.add(icon)
             navLabels.add(lbl)
-            nav.addView(item, lp(w = 0, h = dp(68), weight = 1f))
+            nav.addView(item, lp(w = 0, h = dp(64), weight = 1f))
         }
         root.addView(nav, lp())
 
@@ -380,33 +435,56 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- home
 
+    private fun stat(name: String, value: TextView): LinearLayout {
+        val c = LinearLayout(this)
+        c.orientation = LinearLayout.VERTICAL
+        c.gravity = Gravity.CENTER_HORIZONTAL
+        val l = label(name)
+        l.textSize = 11f
+        l.gravity = Gravity.CENTER
+        l.setSingleLine(true)
+        c.addView(l, lp())
+        value.gravity = Gravity.CENTER
+        value.setSingleLine(true)
+        value.ellipsize = TextUtils.TruncateAt.END
+        c.addView(value, lp(top = 4))
+        return c
+    }
+
     private fun buildHome(): View {
         val col = column()
 
-        // header: title + status chip
+        // header: title + status chip on one row, subtitle full width below
         val head = LinearLayout(this)
         head.orientation = LinearLayout.HORIZONTAL
         head.gravity = Gravity.CENTER_VERTICAL
-        val tb = titleBlock("Move Reminder", "")
-        tvSub = tb.getChildAt(1) as TextView
-        head.addView(tb, lp(w = 0, weight = 1f))
+        val title = text("Move Reminder", 24f, INK, BOLD)
+        title.setSingleLine(true)
+        title.ellipsize = TextUtils.TruncateAt.END
+        head.addView(title, lp(w = 0, weight = 1f, right = 12))
 
         val chip = LinearLayout(this)
         chip.orientation = LinearLayout.HORIZONTAL
         chip.gravity = Gravity.CENTER_VERTICAL
         chip.background = shape(CARD, 999, LINE, 1)
-        chip.setPadding(dp(14), dp(8), dp(14), dp(8))
+        chip.setPadding(dp(12), dp(7), dp(14), dp(7))
         chipDot = View(this)
-        chip.addView(chipDot, lp(w = dp(8), h = dp(8), right = 8))
+        chip.addView(chipDot, lp(w = dp(8), h = dp(8), right = 7))
         chipText = text("Stopped", 13f, INK, BOLD)
-        chip.addView(chipText)
+        chipText.setSingleLine(true)
+        chip.addView(chipText, lp(w = WRAP))
         head.addView(chip, lp(w = WRAP))
         col.addView(head, lp())
 
-        // status card: ring + stats
-        val status = card()
-        status.orientation = LinearLayout.HORIZONTAL
-        status.gravity = Gravity.CENTER_VERTICAL
+        tvSub = text("", 14f, MUTED)
+        tvSub.setSingleLine(true)
+        tvSub.ellipsize = TextUtils.TruncateAt.END
+        col.addView(tvSub, lp(top = 4))
+
+        // hero card: big centred ring, caption, then three stats in a row
+        val hero = card()
+        hero.gravity = Gravity.CENTER_HORIZONTAL
+        hero.setPadding(dp(20), dp(26), dp(20), dp(20))
 
         val ringBox = FrameLayout(this)
         ring = RingView(this)
@@ -414,38 +492,46 @@ class MainActivity : Activity() {
         val center = LinearLayout(this)
         center.orientation = LinearLayout.VERTICAL
         center.gravity = Gravity.CENTER
-        ringNum = text("0", 38f, INK, BOLD)
+        ringNum = text("0", 52f, INK, BOLD)
         ringNum.gravity = Gravity.CENTER
-        ringLabel = text("min sitting", 13f, MUTED)
+        ringNum.setSingleLine(true)
+        ringNum.includeFontPadding = false
+        ringLabel = text("min sitting", 14f, MUTED, MED)
         ringLabel.gravity = Gravity.CENTER
-        center.addView(ringNum)
-        center.addView(ringLabel)
+        ringLabel.setSingleLine(true)
+        center.addView(ringNum, lp(w = WRAP))
+        center.addView(ringLabel, lp(w = WRAP, top = 4))
         ringBox.addView(center, FrameLayout.LayoutParams(MATCH, MATCH))
-        status.addView(ringBox, lp(w = dp(140), h = dp(140), right = 22))
+        hero.addView(ringBox, lp(w = dp(196), h = dp(196)))
 
+        ringCaption = text("", 14f, MUTED, MED)
+        ringCaption.gravity = Gravity.CENTER
+        hero.addView(ringCaption, lp(top = 14))
+
+        val divider = View(this)
+        divider.setBackgroundColor(LINE)
+        hero.addView(divider, lp(h = dp(1), top = 20))
+
+        vMode = text("", 17f, INK, BOLD)
+        vThreshold = text("", 17f, INK, BOLD)
+        vRepeat = text("", 17f, INK, BOLD)
         val stats = LinearLayout(this)
-        stats.orientation = LinearLayout.VERTICAL
-        vMode = text("", 18f, INK, MED)
-        vThreshold = text("", 18f, INK, MED)
-        vRepeat = text("", 18f, INK, MED)
-        stats.addView(label("Mode"))
-        stats.addView(vMode, lp(bottom = 14))
-        stats.addView(label("Threshold"))
-        stats.addView(vThreshold, lp(bottom = 14))
-        stats.addView(label("Repeat"))
-        stats.addView(vRepeat)
-        status.addView(stats, lp(w = 0, weight = 1f))
-        col.addView(status, lp(top = 16))
+        stats.orientation = LinearLayout.HORIZONTAL
+        stats.addView(stat("Mode", vMode), lp(w = 0, weight = 1f))
+        stats.addView(stat("Remind at", vThreshold), lp(w = 0, weight = 1f))
+        stats.addView(stat("Repeat", vRepeat), lp(w = 0, weight = 1f))
+        hero.addView(stats, lp(top = 16))
+        col.addView(hero, lp(top = 18))
 
         // meeting banner (only visible while a meeting is running)
         banner = text("", 14f, BLUE_INK, MED)
-        banner.background = shape(BLUE_BG, 18)
-        banner.setPadding(dp(18), dp(14), dp(18), dp(14))
+        banner.background = shape(BLUE_BG, 16)
+        banner.setPadding(dp(16), dp(12), dp(16), dp(12))
         banner.visibility = View.GONE
         col.addView(banner, lp(top = 12))
 
         // main actions
-        startStop = button("Start tracking", ACCENT, Color.WHITE, 58, 18) {
+        startStop = button("Start tracking", ACCENT, Color.WHITE, 56, 18) {
             if (Prefs.isRunning(this)) {
                 SedentaryService.stop(this)
             } else {
@@ -454,39 +540,44 @@ class MainActivity : Activity() {
             }
             refresh()
         }
-        col.addView(startStop, lp(h = dp(58), top = 16))
+        col.addView(startStop, lp(h = dp(56), top = 16))
 
         col.addView(
-            button("I stood up", CARD, INK, 54, 18, OUTLINE, 2) {
+            button("I stood up", CARD, INK, 52, 18, OUTLINE, 2) {
                 Engine.manualStood(this)
                 toast("Marked. Timer reset.")
                 refresh()
             },
-            lp(h = dp(54), top = 10)
+            lp(h = dp(52), top = 10)
         )
 
         // meeting mode
-        col.addView(label("Meeting mode"), lp(top = 26, bottom = 10))
+        col.addView(label("Meeting mode"), lp(top = 28))
+        col.addView(text("Pause reminders while you sit in a meeting", 13f, MUTED), lp(top = 4, bottom = 12))
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
         val mins = listOf(30, 60, 90, 120)
         mins.forEachIndexed { idx, m ->
-            val b = button("${m}m", CARD, INK, 50, 14, LINE, 1) {
+            val b = button("${m}m", CARD, INK, 48, 14, LINE, 1) {
                 Engine.startMeeting(this, m)
                 toast("Meeting mode for $m min")
                 refresh()
             }
             b.textSize = 15f
-            row.addView(b, lp(w = 0, h = dp(50), weight = 1f, left = if (idx == 0) 0 else 5, right = if (idx == mins.size - 1) 0 else 5))
+            b.setSingleLine(true)
+            row.addView(
+                b,
+                lp(w = 0, h = dp(48), weight = 1f,
+                    left = if (idx == 0) 0 else 4, right = if (idx == mins.size - 1) 0 else 4)
+            )
         }
         col.addView(row, lp())
-        col.addView(
-            button("End meeting now", SOFT, SOFT_TEXT, 48, 14) {
-                Engine.endMeeting(this)
-                refresh()
-            },
-            lp(h = dp(48), top = 10)
-        )
+        endMeetingBtn = button("End meeting now", BLUE_BG, BLUE_INK, 48, 14) {
+            Engine.endMeeting(this)
+            refresh()
+        }
+        endMeetingBtn.visibility = View.GONE
+        col.addView(endMeetingBtn, lp(h = dp(48), top = 10))
 
         return scroller(col)
     }
@@ -521,7 +612,7 @@ class MainActivity : Activity() {
             r.orientation = LinearLayout.HORIZONTAL
             r.gravity = Gravity.CENTER_VERTICAL
             r.addView(edit, lp(w = 0, h = dp(56), weight = 1f, right = 12))
-            r.addView(text(unit, 14f, MUTED), lp(w = dp(60)))
+            r.addView(text(unit, 14f, MUTED), lp(w = WRAP))
             b.addView(r, lp())
         } else {
             b.addView(edit, lp(h = dp(56)))
@@ -614,15 +705,16 @@ class MainActivity : Activity() {
         val head = LinearLayout(this)
         head.orientation = LinearLayout.HORIZONTAL
         head.gravity = Gravity.CENTER_VERTICAL
-        head.addView(titleBlock("History", "Sitting bouts and engine log"), lp(w = 0, weight = 1f))
-        val refreshBtn = button("Refresh log", CARD, INK, 44, 14, OUTLINE, 2) {
+        head.addView(titleBlock("History", null), lp(w = 0, weight = 1f, right = 12))
+        val refreshBtn = button("Refresh", CARD, INK, 40, 999, OUTLINE, 2) {
             historySig = 0
             refresh()
         }
         refreshBtn.textSize = 14f
         refreshBtn.setPadding(dp(16), 0, dp(16), 0)
-        head.addView(refreshBtn, lp(w = WRAP, h = dp(44)))
+        head.addView(refreshBtn, lp(w = WRAP, h = dp(40)))
         col.addView(head, lp())
+        col.addView(text("Last 15 sitting bouts and engine decisions", 14f, MUTED), lp(top = 4))
 
         boutList = LinearLayout(this)
         boutList.orientation = LinearLayout.VERTICAL
@@ -701,9 +793,8 @@ class MainActivity : Activity() {
         c.addView(bar, lp(h = dp(8), top = 12))
 
         // tags
-        val tags = LinearLayout(this)
-        tags.orientation = LinearLayout.HORIZONTAL
-        if (nudged) tags.addView(tag("Nudged", Color.parseColor("#FFF1D1"), Color.parseColor("#6B4500")), lp(w = WRAP, right = 8))
+        val tags = FlowLayout(this, dp(8), dp(8))
+        if (nudged) tags.addView(tag("Nudged", Color.parseColor("#FFF1D1"), Color.parseColor("#6B4500")))
         val endText = when (endedBy) {
             "movement" -> "Ended by movement"
             "manual" -> "Ended manually"
@@ -712,8 +803,8 @@ class MainActivity : Activity() {
         }
         val endBg = if (endedBy == "movement") Color.parseColor("#DDF1E8") else SOFT
         val endFg = if (endedBy == "movement") Color.parseColor("#0F5A45") else SOFT_TEXT
-        tags.addView(tag(endText, endBg, endFg), lp(w = WRAP, right = 8))
-        tags.addView(tag(if (mode == Prefs.MODE_MEETING) "Meeting" else "Office", SOFT, SOFT_TEXT), lp(w = WRAP))
+        tags.addView(tag(endText, endBg, endFg))
+        tags.addView(tag(if (mode == Prefs.MODE_MEETING) "Meeting" else "Office", SOFT, SOFT_TEXT))
         c.addView(tags, lp(top = 12))
         return c
     }
@@ -790,8 +881,8 @@ class MainActivity : Activity() {
         val sitting = if (running) Engine.sittingMinutes(this) else 0L
 
         // header
-        val window = "active ${Prefs.windowStart(this)}:00 to ${Prefs.windowEnd(this)}:00"
-        tvSub.text = (if (meeting) "Meeting mode" else "Office mode") + " · " + window
+        val window = String.format(Locale.US, "%02d:00\u2013%02d:00", Prefs.windowStart(this), Prefs.windowEnd(this))
+        tvSub.text = (if (meeting) "Meeting mode" else "Office mode") + " \u00B7 active " + window
         val dot: Int
         if (!running) {
             chipText.text = "Stopped"; dot = RED
@@ -816,15 +907,25 @@ class MainActivity : Activity() {
             ring.progress = if (running && threshold > 0) sitting.toFloat() / threshold.toFloat() else 0f
         }
 
+        ringCaption.text = when {
+            !running -> "Tap Start tracking to begin"
+            meeting -> "Reminders paused"
+            sitting >= threshold -> "Time to stand up"
+            else -> "Reminder at $threshold min"
+        }
+        ringCaption.setTextColor(if (running && !meeting && sitting >= threshold) Color.parseColor("#8A5A00") else MUTED)
+
         vMode.text = if (meeting) "Meeting" else "Office"
         vThreshold.text = "$threshold min"
-        vRepeat.text = if (repeat > 0) "Every $repeat min" else "Off"
+        vRepeat.text = if (repeat > 0) "$repeat min" else "Off"
 
         if (meeting) {
             banner.text = "Meeting mode, $left min left. Reminders are paused."
             banner.visibility = View.VISIBLE
+            endMeetingBtn.visibility = View.VISIBLE
         } else {
             banner.visibility = View.GONE
+            endMeetingBtn.visibility = View.GONE
         }
 
         startStop.text = if (running) "Stop tracking" else "Start tracking"
