@@ -2,10 +2,18 @@ package com.fiaz.movereminder
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
+import android.graphics.RectF
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -13,26 +21,166 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import android.text.InputType
+import android.text.Spannable
+import android.text.SpannableString
+import android.text.style.ForegroundColorSpan
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import java.text.SimpleDateFormat
+import java.util.Locale
+
+// ------------------------------------------------------------------ palette
+
+private val BG = Color.parseColor("#F2F5F3")
+private val CARD = Color.parseColor("#FFFFFF")
+private val LINE = Color.parseColor("#E1E8E5")
+private val INK = Color.parseColor("#0E1B18")
+private val MUTED = Color.parseColor("#5F716C")
+private val ACCENT = Color.parseColor("#17886B")
+private val AMBER = Color.parseColor("#E39A1E")
+private val RED = Color.parseColor("#B8452F")
+private val BLUE = Color.parseColor("#2F6FDB")
+private val TRACK = Color.parseColor("#E6EEEA")
+private val FIELD = Color.parseColor("#F7FAF8")
+private val FIELD_LINE = Color.parseColor("#D5E0DB")
+private val SOFT = Color.parseColor("#E4ECE8")
+private val SOFT_TEXT = Color.parseColor("#3B4D48")
+private val OUTLINE = Color.parseColor("#CBD8D3")
+private val AMBER_BG = Color.parseColor("#FFF4DE")
+private val AMBER_LINE = Color.parseColor("#EBD39C")
+private val AMBER_INK = Color.parseColor("#4A3000")
+private val BLUE_BG = Color.parseColor("#E8F0FD")
+private val BLUE_INK = Color.parseColor("#1B3F85")
+private val LOG_BG = Color.parseColor("#14211E")
+private val LOG_FG = Color.parseColor("#CFE3DC")
+private val LOG_TS = Color.parseColor("#7FA395")
+
+private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+
+// ------------------------------------------------------------ custom views
+
+/** Progress ring: a track circle with a rounded arc on top. */
+private class RingView(ctx: Context) : View(ctx) {
+    var progress = 0f
+        set(v) { field = v; invalidate() }
+    var ringColor = ACCENT
+        set(v) { field = v; invalidate() }
+
+    private val track = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val arc = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    init {
+        track.style = Paint.Style.STROKE
+        arc.style = Paint.Style.STROKE
+        arc.strokeCap = Paint.Cap.ROUND
+    }
+
+    override fun onDraw(c: Canvas) {
+        val w = width.toFloat()
+        val sw = w * 12f / 140f
+        track.strokeWidth = sw
+        arc.strokeWidth = sw
+        track.color = TRACK
+        arc.color = ringColor
+        val r = RectF(sw / 2f, sw / 2f, w - sw / 2f, w - sw / 2f)
+        c.drawArc(r, 0f, 360f, false, track)
+        val p = progress.coerceIn(0f, 1f)
+        if (p > 0f) c.drawArc(r, -90f, 360f * p, false, arc)
+    }
+}
+
+/** Three simple stroke icons for the bottom bar: 0 home, 1 sliders, 2 clock. */
+private class IconView(ctx: Context, private val kind: Int) : View(ctx) {
+    var tint = MUTED
+        set(v) { field = v; invalidate() }
+
+    private val p = Paint(Paint.ANTI_ALIAS_FLAG)
+
+    init {
+        p.style = Paint.Style.STROKE
+        p.strokeCap = Paint.Cap.ROUND
+        p.strokeJoin = Paint.Join.ROUND
+        p.strokeWidth = 2f
+    }
+
+    override fun onDraw(c: Canvas) {
+        p.color = tint
+        val s = width / 24f
+        c.save()
+        c.scale(s, s)
+        when (kind) {
+            0 -> {
+                val path = Path()
+                path.moveTo(4f, 11f); path.lineTo(12f, 4f); path.lineTo(20f, 11f)
+                path.moveTo(6f, 10f); path.lineTo(6f, 20f); path.lineTo(18f, 20f); path.lineTo(18f, 10f)
+                c.drawPath(path, p)
+            }
+            1 -> {
+                c.drawLine(4f, 7f, 14f, 7f, p)
+                c.drawLine(18f, 7f, 20f, 7f, p)
+                c.drawCircle(16f, 7f, 2f, p)
+                c.drawLine(4f, 17f, 6f, 17f, p)
+                c.drawLine(10f, 17f, 20f, 17f, p)
+                c.drawCircle(8f, 17f, 2f, p)
+            }
+            else -> {
+                c.drawCircle(12f, 12f, 8f, p)
+                val path = Path()
+                path.moveTo(12f, 8f); path.lineTo(12f, 12f); path.lineTo(15f, 14f)
+                c.drawPath(path, p)
+            }
+        }
+        c.restore()
+    }
+}
+
+// ----------------------------------------------------------------- activity
 
 class MainActivity : Activity() {
 
-    private lateinit var status: TextView
-    private lateinit var logView: TextView
-    private lateinit var startStop: Button
+    private val REG: Typeface = Typeface.create("sans-serif", Typeface.NORMAL)
+    private val MED: Typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+    private val BOLD: Typeface = Typeface.create("sans-serif", Typeface.BOLD)
+    private val MONO: Typeface = Typeface.MONOSPACE
+
+    // home
+    private lateinit var tvSub: TextView
+    private lateinit var chipText: TextView
+    private lateinit var chipDot: View
+    private lateinit var ring: RingView
+    private lateinit var ringNum: TextView
+    private lateinit var ringLabel: TextView
+    private lateinit var vMode: TextView
+    private lateinit var vThreshold: TextView
+    private lateinit var vRepeat: TextView
+    private lateinit var banner: TextView
+    private lateinit var startStop: TextView
+
+    // settings
     private lateinit var eThreshold: EditText
     private lateinit var eSteps: EditText
     private lateinit var eStart: EditText
     private lateinit var eEnd: EditText
     private lateinit var eRepeat: EditText
+
+    // history
+    private lateinit var boutList: LinearLayout
+    private lateinit var logBox: LinearLayout
+    private var historySig = 0
+
+    // navigation
+    private lateinit var screens: List<View>
+    private val navIcons = ArrayList<IconView>()
+    private val navLabels = ArrayList<TextView>()
+    private var tab = 0
 
     private val ui = Handler(Looper.getMainLooper())
     private val ticker = object : Runnable {
@@ -45,7 +193,19 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Notifier.createChannels(this)
+
+        @Suppress("DEPRECATION")
+        run {
+            window.statusBarColor = BG
+            window.navigationBarColor = CARD
+            var flags = window.decorView.systemUiVisibility
+            flags = flags or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+            if (Build.VERSION.SDK_INT >= 27) flags = flags or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+            window.decorView.systemUiVisibility = flags
+        }
+
         setContentView(buildUi())
+        showTab(0)
         askPermissions()
     }
 
@@ -59,21 +219,233 @@ class MainActivity : Activity() {
         ui.removeCallbacks(ticker)
     }
 
-    // ---------------------------------------------------------------- UI
+    // ------------------------------------------------------------- helpers
+
+    private fun dp(v: Int): Int = (v * resources.displayMetrics.density + 0.5f).toInt()
+
+    private fun shape(color: Int, radiusDp: Int, strokeColor: Int = 0, strokeDp: Int = 0): GradientDrawable {
+        val d = GradientDrawable()
+        d.shape = GradientDrawable.RECTANGLE
+        d.cornerRadius = dp(radiusDp).toFloat()
+        d.setColor(color)
+        if (strokeDp > 0) d.setStroke(dp(strokeDp), strokeColor)
+        return d
+    }
+
+    private fun ripple(fill: Int, radiusDp: Int, strokeColor: Int = 0, strokeDp: Int = 0): RippleDrawable =
+        RippleDrawable(
+            ColorStateList.valueOf(0x22000000),
+            shape(fill, radiusDp, strokeColor, strokeDp),
+            shape(Color.WHITE, radiusDp)
+        )
+
+    private fun lp(
+        w: Int = MATCH, h: Int = WRAP,
+        top: Int = 0, bottom: Int = 0, left: Int = 0, right: Int = 0,
+        weight: Float = 0f
+    ): LinearLayout.LayoutParams {
+        val p = LinearLayout.LayoutParams(w, h, weight)
+        p.setMargins(dp(left), dp(top), dp(right), dp(bottom))
+        return p
+    }
+
+    private fun text(s: String, sp: Float, color: Int, tf: Typeface = REG): TextView {
+        val t = TextView(this)
+        t.text = s
+        t.textSize = sp
+        t.setTextColor(color)
+        t.typeface = tf
+        return t
+    }
+
+    /** Small uppercase section label. */
+    private fun label(s: String): TextView {
+        val t = text(s.uppercase(Locale.US), 12f, MUTED, BOLD)
+        t.letterSpacing = 0.08f
+        return t
+    }
+
+    private fun card(radiusDp: Int = 28, fill: Int = CARD, stroke: Int = LINE): LinearLayout {
+        val c = LinearLayout(this)
+        c.orientation = LinearLayout.VERTICAL
+        c.background = shape(fill, radiusDp, stroke, 1)
+        c.setPadding(dp(22), dp(22), dp(22), dp(22))
+        return c
+    }
+
+    private fun button(
+        label: String, fill: Int, textColor: Int, heightDp: Int, radiusDp: Int,
+        stroke: Int = 0, strokeDp: Int = 0, onClick: () -> Unit
+    ): TextView {
+        val t = text(label, 16f, textColor, BOLD)
+        t.gravity = Gravity.CENTER
+        t.background = ripple(fill, radiusDp, stroke, strokeDp)
+        t.isClickable = true
+        t.isFocusable = true
+        t.setOnClickListener { onClick() }
+        t.layoutParams = lp(h = dp(heightDp))
+        return t
+    }
+
+    private fun column(): LinearLayout {
+        val c = LinearLayout(this)
+        c.orientation = LinearLayout.VERTICAL
+        c.setPadding(dp(20), dp(24), dp(20), dp(24))
+        return c
+    }
+
+    private fun scroller(content: View): ScrollView {
+        val s = ScrollView(this)
+        s.isVerticalScrollBarEnabled = false
+        s.addView(content)
+        return s
+    }
+
+    private fun titleBlock(title: String, sub: String?): LinearLayout {
+        val col = LinearLayout(this)
+        col.orientation = LinearLayout.VERTICAL
+        col.addView(text(title, 26f, INK, BOLD))
+        if (sub != null) {
+            val s = text(sub, 14f, MUTED)
+            s.setPadding(0, dp(2), 0, 0)
+            col.addView(s)
+        }
+        return col
+    }
+
+    // ------------------------------------------------------------------ UI
 
     private fun buildUi(): View {
-        val pad = (16 * resources.displayMetrics.density).toInt()
         val root = LinearLayout(this)
         root.orientation = LinearLayout.VERTICAL
-        root.setPadding(pad, pad, pad, pad)
+        root.setBackgroundColor(BG)
 
-        status = TextView(this)
-        status.textSize = 18f
-        status.setTypeface(Typeface.MONOSPACE)
-        status.setPadding(0, 0, 0, pad)
-        root.addView(status)
+        val frame = FrameLayout(this)
+        screens = listOf(buildHome(), buildSettings(), buildHistory())
+        screens.forEach { frame.addView(it, FrameLayout.LayoutParams(MATCH, MATCH)) }
+        root.addView(frame, lp(h = 0, weight = 1f))
 
-        startStop = button("Start tracking") {
+        val line = View(this)
+        line.setBackgroundColor(LINE)
+        root.addView(line, lp(h = dp(1)))
+
+        val nav = LinearLayout(this)
+        nav.orientation = LinearLayout.HORIZONTAL
+        nav.setBackgroundColor(CARD)
+        val names = listOf("Home", "Settings", "History")
+        for (i in 0..2) {
+            val item = LinearLayout(this)
+            item.orientation = LinearLayout.VERTICAL
+            item.gravity = Gravity.CENTER
+            item.isClickable = true
+            item.isFocusable = true
+            item.contentDescription = names[i]
+            item.setOnClickListener { showTab(i) }
+            val icon = IconView(this, i)
+            val lbl = text(names[i], 12f, MUTED, MED)
+            lbl.setPadding(0, dp(4), 0, 0)
+            item.addView(icon, LinearLayout.LayoutParams(dp(24), dp(24)))
+            item.addView(lbl)
+            navIcons.add(icon)
+            navLabels.add(lbl)
+            nav.addView(item, lp(w = 0, h = dp(68), weight = 1f))
+        }
+        root.addView(nav, lp())
+
+        // Edge-to-edge on Android 15: keep content clear of the system bars.
+        root.setOnApplyWindowInsetsListener { _, insets ->
+            @Suppress("DEPRECATION")
+            val top = insets.systemWindowInsetTop
+            @Suppress("DEPRECATION")
+            val bottom = insets.systemWindowInsetBottom
+            root.setPadding(0, top, 0, 0)
+            nav.setPadding(0, 0, 0, bottom)
+            insets
+        }
+        return root
+    }
+
+    private fun showTab(i: Int) {
+        tab = i
+        screens.forEachIndexed { idx, v -> v.visibility = if (idx == i) View.VISIBLE else View.GONE }
+        for (idx in 0..2) {
+            val on = idx == i
+            navIcons[idx].tint = if (on) ACCENT else MUTED
+            navLabels[idx].setTextColor(if (on) ACCENT else MUTED)
+            navLabels[idx].typeface = if (on) BOLD else MED
+        }
+        historySig = 0
+        refresh()
+    }
+
+    // ---------------------------------------------------------------- home
+
+    private fun buildHome(): View {
+        val col = column()
+
+        // header: title + status chip
+        val head = LinearLayout(this)
+        head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        val tb = titleBlock("Move Reminder", "")
+        tvSub = tb.getChildAt(1) as TextView
+        head.addView(tb, lp(w = 0, weight = 1f))
+
+        val chip = LinearLayout(this)
+        chip.orientation = LinearLayout.HORIZONTAL
+        chip.gravity = Gravity.CENTER_VERTICAL
+        chip.background = shape(CARD, 999, LINE, 1)
+        chip.setPadding(dp(14), dp(8), dp(14), dp(8))
+        chipDot = View(this)
+        chip.addView(chipDot, lp(w = dp(8), h = dp(8), right = 8))
+        chipText = text("Stopped", 13f, INK, BOLD)
+        chip.addView(chipText)
+        head.addView(chip, lp(w = WRAP))
+        col.addView(head, lp())
+
+        // status card: ring + stats
+        val status = card()
+        status.orientation = LinearLayout.HORIZONTAL
+        status.gravity = Gravity.CENTER_VERTICAL
+
+        val ringBox = FrameLayout(this)
+        ring = RingView(this)
+        ringBox.addView(ring, FrameLayout.LayoutParams(MATCH, MATCH))
+        val center = LinearLayout(this)
+        center.orientation = LinearLayout.VERTICAL
+        center.gravity = Gravity.CENTER
+        ringNum = text("0", 38f, INK, BOLD)
+        ringNum.gravity = Gravity.CENTER
+        ringLabel = text("min sitting", 13f, MUTED)
+        ringLabel.gravity = Gravity.CENTER
+        center.addView(ringNum)
+        center.addView(ringLabel)
+        ringBox.addView(center, FrameLayout.LayoutParams(MATCH, MATCH))
+        status.addView(ringBox, lp(w = dp(140), h = dp(140), right = 22))
+
+        val stats = LinearLayout(this)
+        stats.orientation = LinearLayout.VERTICAL
+        vMode = text("", 18f, INK, MED)
+        vThreshold = text("", 18f, INK, MED)
+        vRepeat = text("", 18f, INK, MED)
+        stats.addView(label("Mode"))
+        stats.addView(vMode, lp(bottom = 14))
+        stats.addView(label("Threshold"))
+        stats.addView(vThreshold, lp(bottom = 14))
+        stats.addView(label("Repeat"))
+        stats.addView(vRepeat)
+        status.addView(stats, lp(w = 0, weight = 1f))
+        col.addView(status, lp(top = 16))
+
+        // meeting banner (only visible while a meeting is running)
+        banner = text("", 14f, BLUE_INK, MED)
+        banner.background = shape(BLUE_BG, 18)
+        banner.setPadding(dp(18), dp(14), dp(18), dp(14))
+        banner.visibility = View.GONE
+        col.addView(banner, lp(top = 12))
+
+        // main actions
+        startStop = button("Start tracking", ACCENT, Color.WHITE, 58, 18) {
             if (Prefs.isRunning(this)) {
                 SedentaryService.stop(this)
             } else {
@@ -82,112 +454,306 @@ class MainActivity : Activity() {
             }
             refresh()
         }
-        root.addView(startStop)
+        col.addView(startStop, lp(h = dp(58), top = 16))
 
-        root.addView(button("I stood up") {
-            Engine.manualStood(this)
-            toast("Marked. Timer reset.")
-            refresh()
-        })
+        col.addView(
+            button("I stood up", CARD, INK, 54, 18, OUTLINE, 2) {
+                Engine.manualStood(this)
+                toast("Marked. Timer reset.")
+                refresh()
+            },
+            lp(h = dp(54), top = 10)
+        )
 
-        root.addView(header("Meeting mode"))
+        // meeting mode
+        col.addView(label("Meeting mode"), lp(top = 26, bottom = 10))
         val row = LinearLayout(this)
         row.orientation = LinearLayout.HORIZONTAL
-        listOf(30, 60, 90, 120).forEach { m ->
-            val b = Button(this)
-            b.text = "${m}m"
-            b.setOnClickListener {
+        val mins = listOf(30, 60, 90, 120)
+        mins.forEachIndexed { idx, m ->
+            val b = button("${m}m", CARD, INK, 50, 14, LINE, 1) {
                 Engine.startMeeting(this, m)
                 toast("Meeting mode for $m min")
                 refresh()
             }
-            val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            row.addView(b, lp)
+            b.textSize = 15f
+            row.addView(b, lp(w = 0, h = dp(50), weight = 1f, left = if (idx == 0) 0 else 5, right = if (idx == mins.size - 1) 0 else 5))
         }
-        root.addView(row)
-        root.addView(button("End meeting now") {
-            Engine.endMeeting(this)
-            refresh()
-        })
-
-        root.addView(header("Settings"))
-        eThreshold = field("Sit threshold (minutes)", Prefs.thresholdMin(this).toString(), root)
-        eSteps = field("Steps that count as movement", Prefs.moveSteps(this).toString(), root)
-        eStart = field("Active from (hour 0-23)", Prefs.windowStart(this).toString(), root)
-        eEnd = field("Active until (hour 0-23)", Prefs.windowEnd(this).toString(), root)
-        eRepeat = field(
-            "Repeat reminder every (minutes, 0 = off)",
-            Prefs.repeatMin(this).toString(), root
+        col.addView(row, lp())
+        col.addView(
+            button("End meeting now", SOFT, SOFT_TEXT, 48, 14) {
+                Engine.endMeeting(this)
+                refresh()
+            },
+            lp(h = dp(48), top = 10)
         )
-        root.addView(button("Save settings") {
-            saveSettings()
-            toast("Saved")
-        })
 
-        root.addView(header("Battery setup (required)"))
-        root.addView(note("One UI will kill this service unless you exempt it. Open the settings below and set battery usage to Unrestricted, and add the app to Never sleeping apps."))
-        root.addView(button("Open app settings") {
-            startActivity(
-                Intent(
-                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                    Uri.parse("package:$packageName")
-                )
-            )
-        })
-        root.addView(button("Battery optimisation list") {
-            try {
-                startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-            } catch (e: Exception) {
-                toast("Not available on this device")
-            }
-        })
-
-        root.addView(header("History and log"))
-        root.addView(button("Refresh log") { refresh() })
-        logView = TextView(this)
-        logView.textSize = 11f
-        logView.setTypeface(Typeface.MONOSPACE)
-        logView.setTextColor(Color.DKGRAY)
-        root.addView(logView)
-
-        val scroll = ScrollView(this)
-        scroll.addView(root)
-        return scroll
+        return scroller(col)
     }
 
-    private fun header(t: String): TextView {
-        val tv = TextView(this)
-        tv.text = t
-        tv.textSize = 15f
-        tv.setTypeface(null, Typeface.BOLD)
-        val p = (12 * resources.displayMetrics.density).toInt()
-        tv.setPadding(0, p * 2, 0, p / 2)
-        return tv
-    }
+    // ------------------------------------------------------------ settings
 
-    private fun note(t: String): TextView {
-        val tv = TextView(this)
-        tv.text = t
-        tv.textSize = 12f
-        tv.setTextColor(Color.DKGRAY)
-        return tv
-    }
-
-    private fun button(label: String, onClick: () -> Unit): Button {
-        val b = Button(this)
-        b.text = label
-        b.setOnClickListener { onClick() }
-        return b
-    }
-
-    private fun field(label: String, value: String, parent: LinearLayout): EditText {
-        parent.addView(note(label))
+    private fun numField(value: String, desc: String): EditText {
         val e = EditText(this)
         e.inputType = InputType.TYPE_CLASS_NUMBER
         e.setText(value)
-        e.gravity = Gravity.START
-        parent.addView(e)
+        e.textSize = 20f
+        e.typeface = MED
+        e.setTextColor(INK)
+        e.gravity = Gravity.CENTER_VERTICAL
+        e.setPadding(dp(16), 0, dp(16), 0)
+        e.setSingleLine(true)
+        e.contentDescription = desc
+        e.background = shape(FIELD, 16, FIELD_LINE, 1)
+        e.setOnFocusChangeListener { v, focused ->
+            v.background = if (focused) shape(FIELD, 16, ACCENT, 2) else shape(FIELD, 16, FIELD_LINE, 1)
+        }
         return e
+    }
+
+    /** Label on top, field below, optional unit or hint. */
+    private fun fieldBlock(title: String, edit: EditText, unit: String?, hint: String?): LinearLayout {
+        val b = LinearLayout(this)
+        b.orientation = LinearLayout.VERTICAL
+        b.addView(text(title, 15f, INK, BOLD), lp(bottom = 8))
+        if (unit != null) {
+            val r = LinearLayout(this)
+            r.orientation = LinearLayout.HORIZONTAL
+            r.gravity = Gravity.CENTER_VERTICAL
+            r.addView(edit, lp(w = 0, h = dp(56), weight = 1f, right = 12))
+            r.addView(text(unit, 14f, MUTED), lp(w = dp(60)))
+            b.addView(r, lp())
+        } else {
+            b.addView(edit, lp(h = dp(56)))
+        }
+        if (hint != null) b.addView(text(hint, 13f, MUTED), lp(top = 6))
+        return b
+    }
+
+    private fun buildSettings(): View {
+        val col = column()
+        col.addView(titleBlock("Settings", "When and how Move Reminder nudges you"), lp())
+
+        eThreshold = numField(Prefs.thresholdMin(this).toString(), "Sit threshold in minutes")
+        eSteps = numField(Prefs.moveSteps(this).toString(), "Steps that count as movement")
+        eStart = numField(Prefs.windowStart(this).toString(), "Active from hour")
+        eEnd = numField(Prefs.windowEnd(this).toString(), "Active until hour")
+        eRepeat = numField(Prefs.repeatMin(this).toString(), "Repeat reminder every minutes")
+
+        val fields = card()
+        fields.addView(fieldBlock("Sit threshold", eThreshold, "minutes", null), lp())
+        fields.addView(fieldBlock("Steps that count as movement", eSteps, "steps", null), lp(top = 20))
+
+        val hours = LinearLayout(this)
+        hours.orientation = LinearLayout.HORIZONTAL
+        hours.addView(fieldBlock("Active from", eStart, null, "Hour, 0 to 23"), lp(w = 0, weight = 1f, right = 7))
+        hours.addView(fieldBlock("Active until", eEnd, null, "Hour, 0 to 23"), lp(w = 0, weight = 1f, left = 7))
+        fields.addView(hours, lp(top = 20))
+
+        fields.addView(fieldBlock("Repeat reminder every", eRepeat, "minutes", "Set 0 to turn repeat off"), lp(top = 20))
+        col.addView(fields, lp(top = 16))
+
+        col.addView(
+            button("Save settings", ACCENT, Color.WHITE, 58, 18) {
+                saveSettings()
+                toast("Saved")
+            },
+            lp(h = dp(58), top = 16)
+        )
+
+        // battery setup
+        val bat = card(28, AMBER_BG, AMBER_LINE)
+        val top = LinearLayout(this)
+        top.orientation = LinearLayout.HORIZONTAL
+        top.gravity = Gravity.CENTER_VERTICAL
+        top.addView(text("Battery setup", 18f, AMBER_INK, BOLD), lp(w = 0, weight = 1f))
+        val badge = text("REQUIRED", 12f, Color.WHITE, BOLD)
+        badge.letterSpacing = 0.06f
+        badge.background = shape(Color.parseColor("#8A5A00"), 999)
+        badge.setPadding(dp(10), dp(5), dp(10), dp(5))
+        top.addView(badge, lp(w = WRAP))
+        bat.addView(top, lp())
+        val info = text(
+            "One UI will kill this service unless you exempt it. Open the settings below, " +
+                "set battery usage to Unrestricted, and add the app to Never sleeping apps.",
+            15f, AMBER_INK
+        )
+        info.setLineSpacing(0f, 1.2f)
+        bat.addView(info, lp(top = 12))
+        bat.addView(
+            button("Open app settings", Color.parseColor("#1F2A27"), Color.WHITE, 52, 16) {
+                startActivity(
+                    Intent(
+                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:$packageName")
+                    )
+                )
+            },
+            lp(h = dp(52), top = 14)
+        )
+        bat.addView(
+            button("Battery optimisation list", Color.TRANSPARENT, AMBER_INK, 52, 16, Color.parseColor("#B8923F"), 2) {
+                try {
+                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                } catch (e: Exception) {
+                    toast("Not available on this device")
+                }
+            },
+            lp(h = dp(52), top = 10)
+        )
+        col.addView(bat, lp(top = 24))
+
+        return scroller(col)
+    }
+
+    // ------------------------------------------------------------- history
+
+    private fun buildHistory(): View {
+        val col = column()
+
+        val head = LinearLayout(this)
+        head.orientation = LinearLayout.HORIZONTAL
+        head.gravity = Gravity.CENTER_VERTICAL
+        head.addView(titleBlock("History", "Sitting bouts and engine log"), lp(w = 0, weight = 1f))
+        val refreshBtn = button("Refresh log", CARD, INK, 44, 14, OUTLINE, 2) {
+            historySig = 0
+            refresh()
+        }
+        refreshBtn.textSize = 14f
+        refreshBtn.setPadding(dp(16), 0, dp(16), 0)
+        head.addView(refreshBtn, lp(w = WRAP, h = dp(44)))
+        col.addView(head, lp())
+
+        boutList = LinearLayout(this)
+        boutList.orientation = LinearLayout.VERTICAL
+        col.addView(boutList, lp(top = 16))
+
+        col.addView(label("Engine log"), lp(top = 24, bottom = 10))
+        logBox = LinearLayout(this)
+        logBox.orientation = LinearLayout.VERTICAL
+        logBox.background = shape(LOG_BG, 20)
+        logBox.setPadding(dp(18), dp(18), dp(18), dp(10))
+        col.addView(logBox, lp())
+
+        return scroller(col)
+    }
+
+    private fun tag(s: String, bg: Int, fg: Int): TextView {
+        val t = text(s, 12f, fg, BOLD)
+        t.background = shape(bg, 999)
+        t.setPadding(dp(10), dp(4), dp(10), dp(4))
+        return t
+    }
+
+    private fun fmtDur(secs: Long): String {
+        val m = secs / 60
+        return when {
+            m < 1 -> "<1 min"
+            m < 120 -> "$m min"
+            else -> "${m / 60} h ${m % 60} min"
+        }
+    }
+
+    private fun fmtDay(ts: String): String {
+        return try {
+            val d = SimpleDateFormat("yyyy-MM-dd", Locale.US).parse(ts.substring(0, 10))
+            if (d == null) ts else SimpleDateFormat("d MMM yyyy", Locale.US).format(d)
+        } catch (e: Exception) {
+            ts
+        }
+    }
+
+    private fun hm(ts: String): String = if (ts.length >= 16) ts.substring(11, 16) else ts
+
+    private fun boutCard(p: List<String>, maxSecs: Long): View {
+        val start = p[0]
+        val end = p[1]
+        val secs = p[2].toLongOrNull() ?: 0L
+        val mode = p[3]
+        val nudged = p[4] == "true"
+        val endedBy = p[5]
+
+        val c = LinearLayout(this)
+        c.orientation = LinearLayout.VERTICAL
+        c.background = shape(CARD, 20, LINE, 1)
+        c.setPadding(dp(18), dp(16), dp(18), dp(16))
+
+        val top = LinearLayout(this)
+        top.orientation = LinearLayout.HORIZONTAL
+        top.gravity = Gravity.CENTER_VERTICAL
+        val left = LinearLayout(this)
+        left.orientation = LinearLayout.VERTICAL
+        left.addView(text("${hm(start)} to ${hm(end)}", 17f, INK, BOLD))
+        left.addView(text(fmtDay(start), 13f, MUTED))
+        top.addView(left, lp(w = 0, weight = 1f))
+        top.addView(text(fmtDur(secs), 17f, INK, BOLD), lp(w = WRAP))
+        c.addView(top, lp())
+
+        // duration bar
+        val frac = (secs.toFloat() / maxSecs.toFloat()).coerceIn(0.05f, 1f)
+        val bar = LinearLayout(this)
+        bar.orientation = LinearLayout.HORIZONTAL
+        bar.background = shape(Color.parseColor("#EDF2EF"), 4)
+        val fill = View(this)
+        fill.background = shape(if (nudged) AMBER else ACCENT, 4)
+        bar.addView(fill, LinearLayout.LayoutParams(0, MATCH, frac))
+        bar.addView(View(this), LinearLayout.LayoutParams(0, MATCH, 1f - frac))
+        c.addView(bar, lp(h = dp(8), top = 12))
+
+        // tags
+        val tags = LinearLayout(this)
+        tags.orientation = LinearLayout.HORIZONTAL
+        if (nudged) tags.addView(tag("Nudged", Color.parseColor("#FFF1D1"), Color.parseColor("#6B4500")), lp(w = WRAP, right = 8))
+        val endText = when (endedBy) {
+            "movement" -> "Ended by movement"
+            "manual" -> "Ended manually"
+            "meeting_end" -> "Meeting ended"
+            else -> endedBy
+        }
+        val endBg = if (endedBy == "movement") Color.parseColor("#DDF1E8") else SOFT
+        val endFg = if (endedBy == "movement") Color.parseColor("#0F5A45") else SOFT_TEXT
+        tags.addView(tag(endText, endBg, endFg), lp(w = WRAP, right = 8))
+        tags.addView(tag(if (mode == Prefs.MODE_MEETING) "Meeting" else "Office", SOFT, SOFT_TEXT), lp(w = WRAP))
+        c.addView(tags, lp(top = 12))
+        return c
+    }
+
+    private fun rebuildHistory() {
+        val bouts = BoutLog.readBouts(this).takeLast(15).reversed()
+        val log = BoutLog.readDebug(this).takeLast(25).reversed()
+        val sig = bouts.hashCode() * 31 + log.hashCode()
+        if (sig == historySig) return
+        historySig = sig
+
+        boutList.removeAllViews()
+        val parsed = bouts.map { it.split(",") }.filter { it.size >= 6 && it[0].length >= 16 && it[1].length >= 16 }
+        if (parsed.isEmpty()) {
+            val empty = text("No sitting bouts recorded yet.", 15f, MUTED)
+            empty.background = shape(CARD, 20, LINE, 1)
+            empty.setPadding(dp(18), dp(18), dp(18), dp(18))
+            boutList.addView(empty, lp())
+        } else {
+            val maxSecs = parsed.maxOf { it[2].toLongOrNull() ?: 0L }.coerceAtLeast(1L)
+            parsed.forEachIndexed { i, p ->
+                boutList.addView(boutCard(p, maxSecs), lp(top = if (i == 0) 0 else 10))
+            }
+        }
+
+        logBox.removeAllViews()
+        if (log.isEmpty()) {
+            logBox.addView(text("Log is empty.", 12f, LOG_FG, MONO), lp(bottom = 8))
+        }
+        for (line in log) {
+            // "yyyy-MM-dd HH:mm:ss  message"
+            val shown = if (line.length > 21) line.substring(5, 19) + "  " + line.substring(21) else line
+            val tsLen = if (line.length > 21) 14 else 0
+            val s = SpannableString(shown)
+            if (tsLen > 0) s.setSpan(ForegroundColorSpan(LOG_TS), 0, tsLen, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+            val t = text("", 12f, LOG_FG, MONO)
+            t.text = s
+            t.setLineSpacing(0f, 1.15f)
+            logBox.addView(t, lp(bottom = 8))
+        }
     }
 
     // ------------------------------------------------------------ actions
@@ -206,31 +772,65 @@ class MainActivity : Activity() {
             we.coerceIn(0, 23),
             rp.coerceIn(0, 120)
         )
+        // show the values that were actually stored (after limits)
+        eThreshold.setText(Prefs.thresholdMin(this).toString())
+        eSteps.setText(Prefs.moveSteps(this).toString())
+        eStart.setText(Prefs.windowStart(this).toString())
+        eEnd.setText(Prefs.windowEnd(this).toString())
+        eRepeat.setText(Prefs.repeatMin(this).toString())
+        refresh()
     }
 
     private fun refresh() {
         val running = Prefs.isRunning(this)
-        startStop.text = if (running) "Stop tracking" else "Start tracking"
-
-        val sb = StringBuilder()
-        sb.append(if (running) "TRACKING\n" else "STOPPED\n")
-        sb.append("Mode      : ${Prefs.mode(this)}\n")
-        if (Prefs.mode(this) == Prefs.MODE_MEETING) {
-            val left = (Prefs.meetingUntil(this) - System.currentTimeMillis()) / 60000L
-            sb.append("Meeting   : ${if (left > 0) left else 0} min left\n")
-        }
-        sb.append("Sitting   : ${Engine.sittingMinutes(this)} min\n")
-        sb.append("Threshold : ${Prefs.thresholdMin(this)} min\n")
+        val meeting = Prefs.mode(this) == Prefs.MODE_MEETING
+        val threshold = Prefs.thresholdMin(this)
         val repeat = Prefs.repeatMin(this)
-        sb.append("Repeat    : ${if (repeat > 0) "every $repeat min" else "off"}\n")
-        status.text = sb.toString()
+        val left = ((Prefs.meetingUntil(this) - System.currentTimeMillis()) / 60000L).coerceAtLeast(0L)
+        val sitting = if (running) Engine.sittingMinutes(this) else 0L
 
-        val bouts = BoutLog.readBouts(this).takeLast(15).reversed()
-        val log = BoutLog.readDebug(this).takeLast(25).reversed()
-        logView.text = "--- last bouts (start,end,secs,mode,nudged,endedBy) ---\n" +
-                bouts.joinToString("\n") +
-                "\n\n--- engine log ---\n" +
-                log.joinToString("\n")
+        // header
+        val window = "active ${Prefs.windowStart(this)}:00 to ${Prefs.windowEnd(this)}:00"
+        tvSub.text = (if (meeting) "Meeting mode" else "Office mode") + " · " + window
+        val dot: Int
+        if (!running) {
+            chipText.text = "Stopped"; dot = RED
+        } else if (meeting) {
+            chipText.text = "Meeting"; dot = BLUE
+        } else {
+            chipText.text = "Tracking"; dot = ACCENT
+        }
+        chipDot.background = shape(dot, 4)
+
+        // ring
+        if (running && meeting) {
+            ringNum.text = left.toString()
+            ringLabel.text = "min left"
+            ring.ringColor = BLUE
+            ring.progress = 1f
+        } else {
+            ringNum.text = sitting.toString()
+            ringLabel.text = "min sitting"
+            val over = running && sitting >= threshold
+            ring.ringColor = if (over) AMBER else ACCENT
+            ring.progress = if (running && threshold > 0) sitting.toFloat() / threshold.toFloat() else 0f
+        }
+
+        vMode.text = if (meeting) "Meeting" else "Office"
+        vThreshold.text = "$threshold min"
+        vRepeat.text = if (repeat > 0) "Every $repeat min" else "Off"
+
+        if (meeting) {
+            banner.text = "Meeting mode, $left min left. Reminders are paused."
+            banner.visibility = View.VISIBLE
+        } else {
+            banner.visibility = View.GONE
+        }
+
+        startStop.text = if (running) "Stop tracking" else "Start tracking"
+        startStop.background = ripple(if (running) Color.parseColor("#1F2A27") else ACCENT, 18)
+
+        if (tab == 2) rebuildHistory()
     }
 
     private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()
