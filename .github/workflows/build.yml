@@ -34,6 +34,14 @@ jobs:
       - name: Run unit tests (timing rules)
         run: gradle testDebugUnitTest --no-daemon --stacktrace
 
+      - name: Test summary
+        if: always()
+        run: |
+          for f in app/build/test-results/testDebugUnitTest/*.xml; do
+            [ -f "$f" ] || { echo "::warning::no unit test results found"; break; }
+            echo "::notice::$(grep -o '<testsuite name="[^"]*" tests="[0-9]*" skipped="[0-9]*" failures="[0-9]*" errors="[0-9]*"' "$f")"
+          done
+
       - name: Build debug APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
