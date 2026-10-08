@@ -16,9 +16,10 @@ object Notifier {
     fun createChannels(ctx: Context) {
         val nm = ctx.getSystemService(NotificationManager::class.java)
 
-        // Silent, collapsed - this one only exists to keep the service alive.
-        val status = NotificationChannel(CH_STATUS, "Tracking", NotificationManager.IMPORTANCE_MIN)
+        // Silent, collapsed - shows the live state and keeps the service alive.
+        val status = NotificationChannel(CH_STATUS, "Tracking status", NotificationManager.IMPORTANCE_MIN)
         status.setShowBadge(false)
+        status.description = "Ongoing status: sitting time and next reminder"
         nm.createNotificationChannel(status)
 
         val nudge = NotificationChannel(CH_NUDGE, "Move reminder", NotificationManager.IMPORTANCE_HIGH)
@@ -27,26 +28,21 @@ object Notifier {
         nm.createNotificationChannel(nudge)
     }
 
-    fun statusNotification(ctx: Context): Notification {
-        val open = PendingIntent.getActivity(
+    private fun openApp(ctx: Context): PendingIntent =
+        PendingIntent.getActivity(
             ctx, 0, Intent(ctx, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val mode = Prefs.mode(ctx)
-        val text = if (mode == Prefs.MODE_MEETING) {
-            val left = (Prefs.meetingUntil(ctx) - System.currentTimeMillis()) / 60000L
-            "Meeting mode - ${if (left > 0) left else 0} min left"
-        } else {
-            "Sitting ${Engine.sittingMinutes(ctx)} min"
-        }
-        return Notification.Builder(ctx, CH_STATUS)
+
+    fun statusNotification(ctx: Context): Notification =
+        Notification.Builder(ctx, CH_STATUS)
             .setContentTitle("Move Reminder")
-            .setContentText(text)
+            .setContentText(Engine.statusLine(ctx))
             .setSmallIcon(android.R.drawable.ic_menu_myplaces)
-            .setContentIntent(open)
+            .setContentIntent(openApp(ctx))
             .setOngoing(true)
+            .setShowWhen(false)
             .build()
-    }
 
     fun nudge(ctx: Context, sittingMin: Int, count: Int = 1) {
         val stood = PendingIntent.getBroadcast(
@@ -59,14 +55,27 @@ object Notifier {
             Intent(ctx, ActionReceiver::class.java).setAction(ActionReceiver.ACTION_MEETING_60),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-        val title = if (count > 1) "Still sitting - reminder #$count" else "Time to stand up"
+        val title: String
+        val text: String
+        if (count <= 1) {
+            title = "Time to stand up"
+            text = "You have been sitting for $sittingMin min. Take a 2-3 minute walk."
+        } else {
+            title = "Still sitting · reminder $count"
+            text = "$sittingMin min without a break. Stand up and move now."
+        }
         val n = Notification.Builder(ctx, CH_NUDGE)
             .setContentTitle(title)
-            .setContentText("You have been sitting for $sittingMin minutes")
+            .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(text))
             .setSmallIcon(android.R.drawable.ic_menu_directions)
+            .setCategory(Notification.CATEGORY_REMINDER)
+            .setContentIntent(openApp(ctx))
+            .setWhen(System.currentTimeMillis())
+            .setShowWhen(true)
             .setAutoCancel(true)
             .addAction(android.R.drawable.ic_menu_directions, "I stood up", stood)
-            .addAction(android.R.drawable.ic_menu_recent_history, "In a meeting (60m)", meeting)
+            .addAction(android.R.drawable.ic_menu_recent_history, "In a meeting · 60 min", meeting)
             .build()
         ctx.getSystemService(NotificationManager::class.java).notify(ID_NUDGE, n)
     }

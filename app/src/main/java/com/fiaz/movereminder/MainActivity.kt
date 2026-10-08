@@ -216,6 +216,9 @@ class MainActivity : Activity() {
     private lateinit var startStop: TextView
     private lateinit var ringCaption: TextView
     private lateinit var endMeetingBtn: TextView
+    private lateinit var setupWarn: TextView
+    private lateinit var setupBox: LinearLayout
+    private var setupSig = ""
 
     // settings
     private lateinit var eThreshold: EditText
@@ -264,7 +267,24 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        selfHeal()
+        setupSig = ""
         ui.post(ticker)
+    }
+
+    /** If tracking should be on but Android stopped it (update, kill), start it again. */
+    private fun selfHeal() {
+        if (!Prefs.isRunning(this)) return
+        if (!SedentaryService.alive) SedentaryService.start(this) else Engine.reschedule(this)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        setupSig = ""
+        if (Prefs.isRunning(this) && !SedentaryService.alive && Setup.activityOk(this)) {
+            SedentaryService.start(this)
+        }
+        refresh()
     }
 
     override fun onPause() {
@@ -530,12 +550,22 @@ class MainActivity : Activity() {
         banner.visibility = View.GONE
         col.addView(banner, lp(top = 12))
 
+        // setup warning (only when something needed for on-time reminders is missing)
+        setupWarn = text("Setup incomplete \u00B7 reminders may be late or missing. Tap to fix.", 14f, AMBER_INK, MED)
+        setupWarn.background = ripple(AMBER_BG, 16, AMBER_LINE, 1)
+        setupWarn.setPadding(dp(16), dp(12), dp(16), dp(12))
+        setupWarn.isClickable = true
+        setupWarn.setOnClickListener { showTab(1) }
+        setupWarn.visibility = View.GONE
+        col.addView(setupWarn, lp(top = 12))
+
         // main actions
         startStop = button("Start tracking", ACCENT, Color.WHITE, 56, 18) {
             if (Prefs.isRunning(this)) {
                 SedentaryService.stop(this)
             } else {
                 saveSettings()
+                Engine.startFresh(this)
                 SedentaryService.start(this)
             }
             refresh()
@@ -632,16 +662,20 @@ class MainActivity : Activity() {
         eRepeat = numField(Prefs.repeatMin(this).toString(), "Repeat reminder every minutes")
 
         val fields = card()
-        fields.addView(fieldBlock("Sit threshold", eThreshold, "minutes", null), lp())
-        fields.addView(fieldBlock("Steps that count as movement", eSteps, "steps", null), lp(top = 20))
+        fields.addView(fieldBlock("Sit threshold", eThreshold, "minutes", "First reminder after this much sitting"), lp())
+        fields.addView(
+            fieldBlock("Steps that count as a break", eSteps, "steps", "Steps within about 5 minutes. 25 to 40 works well."),
+            lp(top = 20)
+        )
 
         val hours = LinearLayout(this)
         hours.orientation = LinearLayout.HORIZONTAL
         hours.addView(fieldBlock("Active from", eStart, null, "Hour, 0 to 23"), lp(w = 0, weight = 1f, right = 7))
         hours.addView(fieldBlock("Active until", eEnd, null, "Hour, 0 to 23"), lp(w = 0, weight = 1f, left = 7))
         fields.addView(hours, lp(top = 20))
+        fields.addView(text("Reminders only run between these hours. Same hour in both = all day.", 13f, MUTED), lp(top = 8))
 
-        fields.addView(fieldBlock("Repeat reminder every", eRepeat, "minutes", "Set 0 to turn repeat off"), lp(top = 20))
+        fields.addView(fieldBlock("Repeat reminder every", eRepeat, "minutes", "Repeats until you move. 0 = remind once only."), lp(top = 20))
         col.addView(fields, lp(top = 16))
 
         col.addView(
@@ -652,49 +686,138 @@ class MainActivity : Activity() {
             lp(h = dp(58), top = 16)
         )
 
-        // battery setup
-        val bat = card(28, AMBER_BG, AMBER_LINE)
-        val top = LinearLayout(this)
-        top.orientation = LinearLayout.HORIZONTAL
-        top.gravity = Gravity.CENTER_VERTICAL
-        top.addView(text("Battery setup", 18f, AMBER_INK, BOLD), lp(w = 0, weight = 1f))
-        val badge = text("REQUIRED", 12f, Color.WHITE, BOLD)
-        badge.letterSpacing = 0.06f
-        badge.background = shape(Color.parseColor("#8A5A00"), 999)
-        badge.setPadding(dp(10), dp(5), dp(10), dp(5))
-        top.addView(badge, lp(w = WRAP))
-        bat.addView(top, lp())
-        val info = text(
-            "One UI will kill this service unless you exempt it. Open the settings below, " +
-                "set battery usage to Unrestricted, and add the app to Never sleeping apps.",
-            15f, AMBER_INK
-        )
-        info.setLineSpacing(0f, 1.2f)
-        bat.addView(info, lp(top = 12))
-        bat.addView(
-            button("Open app settings", Color.parseColor("#1F2A27"), Color.WHITE, 52, 16) {
-                startActivity(
-                    Intent(
-                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                        Uri.parse("package:$packageName")
-                    )
-                )
-            },
-            lp(h = dp(52), top = 14)
-        )
-        bat.addView(
-            button("Battery optimisation list", Color.TRANSPARENT, AMBER_INK, 52, 16, Color.parseColor("#B8923F"), 2) {
-                try {
-                    startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-                } catch (e: Exception) {
-                    toast("Not available on this device")
-                }
-            },
-            lp(h = dp(52), top = 10)
-        )
-        col.addView(bat, lp(top = 24))
+        // setup check (live status, one fix button per missing item)
+        val setup = card()
+        setup.addView(text("Setup check", 18f, INK, BOLD), lp())
+        setup.addView(text("Every item should show OK for on-time reminders.", 14f, MUTED), lp(top = 4))
+        setupBox = LinearLayout(this)
+        setupBox.orientation = LinearLayout.VERTICAL
+        setup.addView(setupBox, lp(top = 6))
+        col.addView(setup, lp(top = 24))
 
         return scroller(col)
+    }
+
+    private fun setupRow(title: String, detail: String, ok: Boolean, badge: String?, fixLabel: String, fix: () -> Unit): View {
+        val r = LinearLayout(this)
+        r.orientation = LinearLayout.HORIZONTAL
+        r.gravity = Gravity.CENTER_VERTICAL
+        r.setPadding(0, dp(12), 0, dp(12))
+        val left = LinearLayout(this)
+        left.orientation = LinearLayout.VERTICAL
+        left.addView(text(title, 15f, INK, BOLD), lp())
+        left.addView(text(detail, 13f, if (ok) MUTED else AMBER_INK), lp(top = 2))
+        r.addView(left, lp(w = 0, weight = 1f, right = 12))
+        when {
+            ok -> r.addView(tag("OK", Color.parseColor("#DDF1E8"), Color.parseColor("#0F5A45")), lp(w = WRAP))
+            badge != null -> r.addView(tag(badge, AMBER_BG, AMBER_INK), lp(w = WRAP))
+            else -> {
+                val b = button(fixLabel, ACCENT, Color.WHITE, 40, 999) { fix() }
+                b.textSize = 14f
+                b.setPadding(dp(18), 0, dp(18), 0)
+                r.addView(b, lp(w = WRAP, h = dp(40)))
+            }
+        }
+        return r
+    }
+
+    private fun refreshSetup() {
+        val n = Setup.notificationsOk(this)
+        val a = Setup.activityOk(this)
+        val sensor = Setup.sensorPresent(this)
+        val b = Setup.batteryOk(this)
+        val x = Setup.exactOk(this)
+        setupWarn.visibility = if (n && a && sensor && b && x) View.GONE else View.VISIBLE
+        val sig = "$n$a$sensor$b$x"
+        if (sig == setupSig) return
+        setupSig = sig
+
+        setupBox.removeAllViews()
+        val rows = ArrayList<View>()
+        rows.add(setupRow(
+            "Notifications",
+            if (n) "Reminders can alert you" else "Reminders cannot appear",
+            n, null, "Allow"
+        ) { fixNotifications() })
+        rows.add(
+            if (!sensor) setupRow("Step counter", "No step sensor on this phone. Reminders are time-only.", false, "Missing", "") { }
+            else setupRow(
+                "Physical activity",
+                if (a) "Steps are counted to detect breaks" else "Needed to notice when you walk",
+                a, null, "Allow"
+            ) { fixActivity() }
+        )
+        rows.add(setupRow(
+            "Battery: Unrestricted",
+            if (b) "App can run all day" else "Android may stop the app and delay reminders",
+            b, null, "Set"
+        ) { fixBattery() })
+        rows.add(setupRow(
+            "Exact timing",
+            if (x) "Reminders arrive on time" else "Reminders may arrive late",
+            x, null, "Allow"
+        ) { fixExact() })
+        rows.forEachIndexed { i, v ->
+            if (i > 0) {
+                val d = View(this)
+                d.setBackgroundColor(LINE)
+                setupBox.addView(d, lp(h = dp(1)))
+            }
+            setupBox.addView(v, lp())
+        }
+    }
+
+    private fun openSafe(i: Intent) {
+        try {
+            startActivity(i)
+        } catch (e: Exception) {
+            try {
+                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+            } catch (x: Exception) {
+                toast("Not available on this device")
+            }
+        }
+    }
+
+    private fun appDetails(): Intent =
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName"))
+
+    /** Ask with the system prompt the first time; afterwards (or if blocked) open settings. */
+    private fun requestOrSettings(perm: String, settings: Intent) {
+        val key = "asked_$perm"
+        val asked = Prefs.get(this).getBoolean(key, false)
+        if (checkSelfPermission(perm) != PackageManager.PERMISSION_GRANTED &&
+            (!asked || shouldShowRequestPermissionRationale(perm))
+        ) {
+            Prefs.get(this).edit().putBoolean(key, true).apply()
+            requestPermissions(arrayOf(perm), 2)
+        } else {
+            openSafe(settings)
+        }
+    }
+
+    private fun fixNotifications() {
+        val settings = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+        if (Build.VERSION.SDK_INT >= 33) requestOrSettings(Manifest.permission.POST_NOTIFICATIONS, settings)
+        else openSafe(settings)
+    }
+
+    private fun fixActivity() {
+        if (Build.VERSION.SDK_INT >= 29) requestOrSettings(Manifest.permission.ACTIVITY_RECOGNITION, appDetails())
+    }
+
+    private fun fixBattery() {
+        try {
+            startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+        } catch (e: Exception) {
+            openSafe(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+        }
+    }
+
+    private fun fixExact() {
+        if (Build.VERSION.SDK_INT >= 31) {
+            openSafe(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName")))
+        }
     }
 
     // ------------------------------------------------------------- history
@@ -799,6 +922,9 @@ class MainActivity : Activity() {
             "movement" -> "Ended by movement"
             "manual" -> "Ended manually"
             "meeting_end" -> "Meeting ended"
+            "meeting" -> "Meeting started"
+            "hours_end" -> "Active hours ended"
+            "stopped" -> "Tracking stopped"
             else -> endedBy
         }
         val endBg = if (endedBy == "movement") Color.parseColor("#DDF1E8") else SOFT
@@ -869,6 +995,8 @@ class MainActivity : Activity() {
         eStart.setText(Prefs.windowStart(this).toString())
         eEnd.setText(Prefs.windowEnd(this).toString())
         eRepeat.setText(Prefs.repeatMin(this).toString())
+        Engine.reschedule(this)
+        SedentaryService.refreshStatus(this)
         refresh()
     }
 
@@ -877,17 +1005,22 @@ class MainActivity : Activity() {
         val meeting = Prefs.mode(this) == Prefs.MODE_MEETING
         val threshold = Prefs.thresholdMin(this)
         val repeat = Prefs.repeatMin(this)
-        val left = ((Prefs.meetingUntil(this) - System.currentTimeMillis()) / 60000L).coerceAtLeast(0L)
+        val left = Engine.meetingMinutesLeft(this)
+        val active = Engine.isActiveNow(this)
         val sitting = if (running) Engine.sittingMinutes(this) else 0L
 
         // header
-        val window = String.format(Locale.US, "%02d:00\u2013%02d:00", Prefs.windowStart(this), Prefs.windowEnd(this))
+        val ws = Prefs.windowStart(this)
+        val we = Prefs.windowEnd(this)
+        val window = if (ws == we) "all day" else String.format(Locale.US, "%02d:00\u2013%02d:00", ws, we)
         tvSub.text = (if (meeting) "Meeting mode" else "Office mode") + " \u00B7 active " + window
         val dot: Int
         if (!running) {
             chipText.text = "Stopped"; dot = RED
         } else if (meeting) {
             chipText.text = "Meeting"; dot = BLUE
+        } else if (!active) {
+            chipText.text = "Off hours"; dot = MUTED
         } else {
             chipText.text = "Tracking"; dot = ACCENT
         }
@@ -910,10 +1043,11 @@ class MainActivity : Activity() {
         ringCaption.text = when {
             !running -> "Tap Start tracking to begin"
             meeting -> "Reminders paused"
+            !active -> "Outside active hours \u00B7 resumes ${Engine.resumesAt(this)}"
             sitting >= threshold -> "Time to stand up"
             else -> "Reminder at $threshold min"
         }
-        ringCaption.setTextColor(if (running && !meeting && sitting >= threshold) Color.parseColor("#8A5A00") else MUTED)
+        ringCaption.setTextColor(if (running && !meeting && active && sitting >= threshold) Color.parseColor("#8A5A00") else MUTED)
 
         vMode.text = if (meeting) "Meeting" else "Office"
         vThreshold.text = "$threshold min"
@@ -931,6 +1065,7 @@ class MainActivity : Activity() {
         startStop.text = if (running) "Stop tracking" else "Start tracking"
         startStop.background = ripple(if (running) Color.parseColor("#1F2A27") else ACCENT, 18)
 
+        refreshSetup()
         if (tab == 2) rebuildHistory()
     }
 
@@ -946,6 +1081,11 @@ class MainActivity : Activity() {
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) need.add(Manifest.permission.POST_NOTIFICATIONS)
 
-        if (need.isNotEmpty()) requestPermissions(need.toTypedArray(), 1)
+        if (need.isNotEmpty()) {
+            val e = Prefs.get(this).edit()
+            need.forEach { e.putBoolean("asked_$it", true) }
+            e.apply()
+            requestPermissions(need.toTypedArray(), 1)
+        }
     }
 }

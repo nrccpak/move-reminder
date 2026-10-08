@@ -1,16 +1,16 @@
 package com.fiaz.movereminder
 
+import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.app.NotificationManager
 import android.os.Build
 import android.os.IBinder
 
 /**
- * The foreground service does almost no work. Its job is to stop One UI from
- * killing the process. The actual sensing happens on the 5 minute alarm tick.
+ * The foreground service keeps the process alive and keeps the step counter
+ * registered. The decisions happen on alarm ticks (Engine).
  */
 class SedentaryService : Service() {
 
@@ -18,20 +18,34 @@ class SedentaryService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        alive = true
         Notifier.createChannels(this)
+        StepReader.startKeepAlive(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        goForeground()
-        Prefs.get(this).edit().putBoolean(Prefs.KEY_RUNNING, true).apply()
-        Scheduler.scheduleNext(this)
-        Engine.tick(this)
+        try {
+            goForeground()
+        } catch (e: Exception) {
+            BoutLog.debug(this, "foreground start failed: ${e.message}")
+        }
+        if (!Prefs.isRunning(this)) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        val doTick = intent?.getBooleanExtra(EXTRA_TICK, true) ?: true
+        if (doTick) {
+            Scheduler.scheduleFallback(this)
+            Engine.tick(this)
+        }
         return START_STICKY
     }
 
     override fun onDestroy() {
+        alive = false
+        StepReader.stopKeepAlive(this)
+        BoutLog.debug(this, "service stopped")
         super.onDestroy()
-        BoutLog.debug(this, "service destroyed")
     }
 
     private fun goForeground() {
@@ -44,21 +58,56 @@ class SedentaryService : Service() {
     }
 
     companion object {
+        const val EXTRA_TICK = "tick"
+
+        @Volatile
+        var alive = false
+
+        /**
+         * Start (or restart) tracking without resetting the sitting clock.
+         * The health-type foreground service needs the Physical activity
+         * permission; without it the app still runs on alarms alone.
+         */
         fun start(ctx: Context) {
-            val i = Intent(ctx, SedentaryService::class.java)
-            ctx.startForegroundService(i)
+            Prefs.get(ctx).edit().putBoolean(Prefs.KEY_RUNNING, true).commit()
+            if (Setup.activityOk(ctx)) {
+                try {
+                    ctx.startForegroundService(Intent(ctx, SedentaryService::class.java))
+                    return
+                } catch (e: Exception) {
+                    BoutLog.debug(ctx, "service start failed: ${e.message}")
+                }
+            }
+            Scheduler.scheduleFallback(ctx)
+            Engine.tick(ctx)
+        }
+
+        /** Bring back a killed service without an extra tick. */
+        fun revive(ctx: Context) {
+            if (!Setup.activityOk(ctx)) return
+            try {
+                ctx.startForegroundService(
+                    Intent(ctx, SedentaryService::class.java).putExtra(EXTRA_TICK, false)
+                )
+                BoutLog.debug(ctx, "service was not running - restarted")
+            } catch (e: Exception) {
+                BoutLog.debug(ctx, "service restart not allowed: ${e.message}")
+            }
         }
 
         fun stop(ctx: Context) {
-            Prefs.get(ctx).edit().putBoolean(Prefs.KEY_RUNNING, false).apply()
+            Engine.stopTracking(ctx)
             Scheduler.cancel(ctx)
             Notifier.cancelNudge(ctx)
             ctx.stopService(Intent(ctx, SedentaryService::class.java))
+            try {
+                ctx.getSystemService(NotificationManager::class.java).cancel(Notifier.ID_STATUS)
+            } catch (e: Exception) { }
         }
 
         /** Update the ongoing notification text without restarting anything. */
         fun refreshStatus(ctx: Context) {
-            if (!Prefs.isRunning(ctx)) return
+            if (!Prefs.isRunning(ctx) || !alive) return
             try {
                 ctx.getSystemService(NotificationManager::class.java)
                     .notify(Notifier.ID_STATUS, Notifier.statusNotification(ctx))

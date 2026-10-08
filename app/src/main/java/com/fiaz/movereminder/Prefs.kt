@@ -25,6 +25,17 @@ object Prefs {
     const val KEY_LAST_NUDGE_TIME = "last_nudge_time"
     const val KEY_NUDGE_COUNT = "nudge_count"
 
+    /** Recent step readings "time:steps;time:steps" for the movement window. */
+    const val KEY_STEP_HISTORY = "step_history"
+    /** Whether the last tick was inside active hours. */
+    const val KEY_WAS_ACTIVE = "was_active"
+    /** Whether the last tick got a step reading. */
+    const val KEY_SENSOR_OK = "sensor_ok"
+    /** When the next check is scheduled (for the UI / debugging). */
+    const val KEY_NEXT_WAKE = "next_wake"
+    /** Physical activity permission has been asked for at least once. */
+    const val KEY_ASKED_ACTIVITY = "asked_activity"
+
     const val MODE_OFFICE = "OFFICE"
     const val MODE_MEETING = "MEETING"
 
@@ -35,7 +46,7 @@ object Prefs {
     fun moveSteps(ctx: Context): Int = get(ctx).getInt(KEY_MOVE_STEPS, 25)
     fun windowStart(ctx: Context): Int = get(ctx).getInt(KEY_WINDOW_START, 7)
     fun windowEnd(ctx: Context): Int = get(ctx).getInt(KEY_WINDOW_END, 17)
-    /** Minutes between repeat nudges within the same bout. 0 = fire once only (old behaviour). */
+    /** Minutes between repeat reminders within the same sitting period. 0 = remind once only. */
     fun repeatMin(ctx: Context): Int = get(ctx).getInt(KEY_REPEAT_MIN, 10)
     fun isRunning(ctx: Context): Boolean = get(ctx).getBoolean(KEY_RUNNING, false)
     fun mode(ctx: Context): String = get(ctx).getString(KEY_MODE, MODE_OFFICE) ?: MODE_OFFICE
@@ -52,6 +63,6 @@ object Prefs {
             .putInt(KEY_WINDOW_START, wStart)
             .putInt(KEY_WINDOW_END, wEnd)
             .putInt(KEY_REPEAT_MIN, repeatMin)
-            .apply()
+            .commit()
     }
 }

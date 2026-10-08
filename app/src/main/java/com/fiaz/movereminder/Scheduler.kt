@@ -4,14 +4,16 @@ import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 
 /**
- * setAndAllowWhileIdle is inexact and needs no special permission. In Doze it
- * may slip to roughly 9 minutes - which is fine for a 25 minute threshold and
- * costs far less battery than an exact alarm.
+ * One alarm, always replaced by the latest schedule. Exact + allow-while-idle so a
+ * reminder lands on time even while the phone lies still on the desk (Doze).
+ * The exact-alarm permission (USE_EXACT_ALARM) is granted automatically to this
+ * app because it is not distributed through Play. Falls back to an inexact alarm
+ * if exact alarms are not allowed.
  */
 object Scheduler {
-    const val INTERVAL_MS = 5 * 60 * 1000L
 
     private fun pi(ctx: Context): PendingIntent =
         PendingIntent.getBroadcast(
@@ -19,13 +21,23 @@ object Scheduler {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-    fun scheduleNext(ctx: Context) {
+    fun scheduleAt(ctx: Context, at: Long) {
         val am = ctx.getSystemService(AlarmManager::class.java)
-        am.setAndAllowWhileIdle(
-            AlarmManager.RTC_WAKEUP,
-            System.currentTimeMillis() + INTERVAL_MS,
-            pi(ctx)
-        )
+        try {
+            if (Build.VERSION.SDK_INT < 31 || am.canScheduleExactAlarms()) {
+                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi(ctx))
+            } else {
+                am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi(ctx))
+            }
+        } catch (e: SecurityException) {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi(ctx))
+        }
+        Prefs.get(ctx).edit().putLong(Prefs.KEY_NEXT_WAKE, at).apply()
+    }
+
+    /** Safety net: a check in 5 minutes, replaced by the real schedule after each tick. */
+    fun scheduleFallback(ctx: Context) {
+        scheduleAt(ctx, System.currentTimeMillis() + Rules.CHECK_MS)
     }
 
     fun cancel(ctx: Context) {

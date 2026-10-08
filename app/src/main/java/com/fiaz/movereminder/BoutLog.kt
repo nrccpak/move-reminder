@@ -21,6 +21,7 @@ object BoutLog {
 
     fun bout(ctx: Context, startTs: Long, endTs: Long, mode: String, nudged: Boolean, endedBy: String) {
         val secs = (endTs - startTs) / 1000
+        if (secs < 60) return // too short to be a sitting period
         append(ctx, BOUTS, "${stamp(startTs)},${stamp(endTs)},$secs,$mode,$nudged,$endedBy")
     }
 

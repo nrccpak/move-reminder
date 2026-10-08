@@ -11,8 +11,8 @@ android {
         applicationId = "com.fiaz.movereminder"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "2.0"
     }
 
     buildTypes {
@@ -32,5 +32,7 @@ android {
 }
 
 dependencies {
-    // intentionally empty - plain framework APIs only, smallest APK, fastest build
+    // The app itself has no dependencies - plain framework APIs only.
+    // JUnit is used only by the unit tests and is not part of the APK.
+    testImplementation("junit:junit:4.13.2")
 }
